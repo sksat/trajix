@@ -8,4 +8,4 @@ name = "trajix"
 path = "src/main.rs"
 
 [dependencies]
-trajix-core = { path = "../trajix-core" }
+trajix = { path = "../trajix" }

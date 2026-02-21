@@ -1,5 +1,5 @@
 [package]
-name = "trajix-core"
+name = "trajix"
 version = "0.1.0"
 edition = "2024"
 

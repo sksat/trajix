@@ -1,7 +1,7 @@
 /**
  * Augment trajix-wasm module to declare FixRecord.
  *
- * FixRecord lives in trajix-core (no tsify), so the WASM package's .d.ts
+ * FixRecord lives in trajix (no tsify), so the WASM package's .d.ts
  * references it without defining it. We provide the definition here.
  */
 // This import makes this file a module, so `declare module` is treated as

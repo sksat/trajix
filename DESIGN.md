@@ -194,7 +194,7 @@ trajix/
   DESIGN.md
   Cargo.toml                    # Rust workspace
   crates/
-    trajix-core/               # パーサライブラリ (Rust)
+    trajix/                    # パーサライブラリ (Rust)
       src/
         types.rs                # 共通型定義
         error.rs                # エラー型

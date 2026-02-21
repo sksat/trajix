@@ -2,10 +2,10 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
 
-use trajix_core::parser::line::Record;
-use trajix_core::parser::streaming::StreamingParser;
-use trajix_core::record::fix::FixRecord;
-use trajix_core::types::FixProvider;
+use trajix::parser::line::Record;
+use trajix::parser::streaming::StreamingParser;
+use trajix::record::fix::FixRecord;
+use trajix::types::FixProvider;
 
 fn main() {
     let path = std::env::args().nth(1).unwrap_or_else(|| {

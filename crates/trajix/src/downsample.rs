@@ -199,7 +199,7 @@ pub fn lttb<V: LttbValue>(samples: &[Sample<V>], target_count: usize) -> Vec<Sam
 ///
 /// # Example
 /// ```
-/// use trajix_core::downsample::{lttb_indices, Sample};
+/// use trajix::downsample::{lttb_indices, Sample};
 ///
 /// let magnitude: Vec<Sample<f64>> = vec![/* ... */];
 /// let indices = lttb_indices(&magnitude, 50);

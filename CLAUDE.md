@@ -19,7 +19,7 @@ cargo test
 cargo test parse_nlp_empty_fields
 
 # Run tests for a specific crate
-cargo test -p trajix-core
+cargo test -p trajix
 
 # CLI: analyze a GNSS log file
 cargo run -p trajix-cli --release -- gnss_log_*.txt
@@ -37,14 +37,14 @@ When developing new data processing features (filtering, aggregation, etc.), pre
 ## Architecture
 
 **Rust workspace** crates:
-- `crates/trajix-core/` — Parser library. Parses GNSS Logger CSV format into typed records. Compiles to WASM.
+- `crates/trajix/` — Parser library. Parses GNSS Logger CSV format into typed records. Compiles to WASM.
 - `crates/trajix-wasm/` — WASM bindings. Exposes streaming `feed(chunk)` API for browser use.
 - `crates/trajix-cli/` — CLI tool for data analysis without browser. Useful for investigating data quality issues on real log files.
 - `web/` — React + TypeScript frontend (Vite + CesiumJS).
 
 **Data pipeline**: File D&D → Web Worker → WASM parser → Arrow RecordBatch → DuckDB-wasm → React UI
 
-### trajix-core internal structure
+### trajix internal structure
 
 - `types.rs` — Shared enums: `ConstellationType` (GPS/GLONASS/QZSS/BeiDou/Galileo), `FixProvider` (GPS/FLP/NLP), `CodeType`, `RecordType`
 - `error.rs` — `ParseError` with `thiserror`
@@ -62,7 +62,7 @@ CSV lines prefixed by record type: `Fix,`, `Status,`, `Raw,`, `UncalAccel,`, etc
 
 ## Test Fixtures
 
-Real data extracted from `gnss_log_*.txt` lives in `crates/trajix-core/tests/fixtures/`. Loaded in tests via:
+Real data extracted from `gnss_log_*.txt` lives in `crates/trajix/tests/fixtures/`. Loaded in tests via:
 ```rust
 let path = format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"));
 std::fs::read_to_string(path).unwrap()

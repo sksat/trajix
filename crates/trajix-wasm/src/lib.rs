@@ -2,11 +2,11 @@ use serde::Serialize;
 use tsify_next::Tsify;
 use wasm_bindgen::prelude::*;
 
-use trajix_core::dead_reckoning::{DeadReckoning, DrConfig, DrSource};
-use trajix_core::parser::header::HeaderInfo;
-use trajix_core::parser::line::{parse_line, Record};
-use trajix_core::record::fix::FixRecord;
-use trajix_core::summary::EpochAggregator;
+use trajix::dead_reckoning::{DeadReckoning, DrConfig, DrSource};
+use trajix::parser::header::HeaderInfo;
+use trajix::parser::line::{parse_line, Record};
+use trajix::record::fix::FixRecord;
+use trajix::summary::EpochAggregator;
 
 // ────────────────────────────────────────────
 // Streaming sensor decimator
@@ -453,7 +453,7 @@ impl GnssLogProcessor {
                         self.dead_reckoning.push_fix(&f);
 
                         // Classify fix quality by provider
-                        use trajix_core::types::FixProvider;
+                        use trajix::types::FixProvider;
                         let quality = match f.provider {
                             FixProvider::Gps | FixProvider::Flp => {
                                 self.last_gps_flp_time_ms = Some(f.unix_time_ms);
