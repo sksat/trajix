@@ -71,6 +71,10 @@ fn main() {
 
     // Fix analysis
     analyze_fixes(&fixes);
+
+    // Altitude spike analysis
+    println!("\n=== Altitude Analysis ===");
+    analyze_altitude(&fixes);
 }
 
 fn analyze_fixes(fixes: &[FixRecord]) {
@@ -408,6 +412,236 @@ fn analyze_jumps_ref(fixes: &[&FixRecord]) {
                 "      {speed:>10.1} km/h  dist={dist_m:>10.1}m  dt={dt_s:>6.1}s  {:?}→{:?}  acc={:?}→{:?}",
                 prev.provider, curr.provider,
                 prev.accuracy_m, curr.accuracy_m,
+            );
+        }
+    }
+}
+
+fn analyze_altitude(fixes: &[FixRecord]) {
+    // Only analyze GPS+FLP (Primary) fixes with altitude
+    let mut primary: Vec<&FixRecord> = fixes
+        .iter()
+        .filter(|f| f.provider == FixProvider::Gps || f.provider == FixProvider::Flp)
+        .filter(|f| f.altitude_m.is_some())
+        .collect();
+    primary.sort_by_key(|f| f.unix_time_ms);
+
+    if primary.len() < 2 {
+        println!("  Not enough Primary fixes with altitude.");
+        return;
+    }
+
+    println!("  Primary fixes with altitude: {}", primary.len());
+
+    // --- Vertical accuracy distribution ---
+    let mut vert_accs: Vec<f64> = primary.iter().filter_map(|f| f.vertical_accuracy_m).collect();
+    vert_accs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    if !vert_accs.is_empty() {
+        let n = vert_accs.len();
+        println!(
+            "  Vertical accuracy (m): min={:.1}, median={:.1}, p90={:.1}, p95={:.1}, p99={:.1}, max={:.1} (n={})",
+            vert_accs[0],
+            vert_accs[n / 2],
+            vert_accs[(n as f64 * 0.9) as usize],
+            vert_accs[(n as f64 * 0.95) as usize],
+            vert_accs[(n as f64 * 0.99) as usize],
+            vert_accs[n - 1],
+            n,
+        );
+    } else {
+        println!("  No vertical_accuracy_m data available.");
+    }
+
+    // --- Altitude range ---
+    let alts: Vec<f64> = primary.iter().map(|f| f.altitude_m.unwrap()).collect();
+    let alt_min = alts.iter().cloned().fold(f64::INFINITY, f64::min);
+    let alt_max = alts.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    println!("  Altitude range: {alt_min:.1}m .. {alt_max:.1}m (span={:.1}m)", alt_max - alt_min);
+
+    // --- Vertical velocity between consecutive fixes ---
+    struct VJump {
+        idx: usize,
+        vv: f64,       // vertical velocity (m/s), signed
+        dt_s: f64,
+        d_alt: f64,
+        vert_acc_before: Option<f64>,
+        vert_acc_after: Option<f64>,
+        alt_before: f64,
+        alt_after: f64,
+        t_offset_s: f64,
+    }
+
+    let t_start = primary[0].unix_time_ms;
+    let mut jumps: Vec<VJump> = Vec::new();
+
+    for i in 1..primary.len() {
+        let prev = primary[i - 1];
+        let curr = primary[i];
+        let dt_s = (curr.unix_time_ms - prev.unix_time_ms) as f64 / 1000.0;
+        if dt_s <= 0.0 || dt_s > 60.0 {
+            continue; // skip zero-time or gap > 60s
+        }
+        let d_alt = curr.altitude_m.unwrap() - prev.altitude_m.unwrap();
+        let vv = d_alt / dt_s;
+        jumps.push(VJump {
+            idx: i,
+            vv,
+            dt_s,
+            d_alt,
+            vert_acc_before: prev.vertical_accuracy_m,
+            vert_acc_after: curr.vertical_accuracy_m,
+            alt_before: prev.altitude_m.unwrap(),
+            alt_after: curr.altitude_m.unwrap(),
+            t_offset_s: (prev.unix_time_ms - t_start) as f64 / 1000.0,
+        });
+    }
+
+    // Vertical velocity distribution (absolute)
+    let mut abs_vv: Vec<f64> = jumps.iter().map(|j| j.vv.abs()).collect();
+    abs_vv.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    if !abs_vv.is_empty() {
+        let n = abs_vv.len();
+        println!(
+            "\n  Vertical velocity |Δalt/Δt| (m/s): median={:.2}, p90={:.2}, p95={:.2}, p99={:.2}, max={:.2}",
+            abs_vv[n / 2],
+            abs_vv[(n as f64 * 0.9) as usize],
+            abs_vv[(n as f64 * 0.95) as usize],
+            abs_vv[(n as f64 * 0.99) as usize],
+            abs_vv[n - 1],
+        );
+
+        // Spike counts by threshold
+        let thresholds = [5.0, 10.0, 20.0, 50.0, 100.0];
+        print!("  Spikes by threshold: ");
+        for &t in &thresholds {
+            let count = abs_vv.iter().filter(|&&v| v > t).count();
+            print!(">{t:.0}m/s={count} ");
+        }
+        println!();
+    }
+
+    // --- Top 10 worst altitude spikes ---
+    let mut worst: Vec<&VJump> = jumps.iter().collect();
+    worst.sort_by(|a, b| b.vv.abs().partial_cmp(&a.vv.abs()).unwrap());
+
+    let n_show = worst.len().min(15);
+    println!("\n  Top {n_show} worst vertical jumps:");
+    println!("    {:>8} {:>8} {:>8} {:>10} {:>10} {:>8}", "vv(m/s)", "Δalt(m)", "dt(s)", "alt_before", "alt_after", "vert_acc");
+    for j in worst.iter().take(n_show) {
+        println!(
+            "    {:>8.1} {:>8.1} {:>8.1} {:>10.1} {:>10.1} {:>8}",
+            j.vv,
+            j.d_alt,
+            j.dt_s,
+            j.alt_before,
+            j.alt_after,
+            match (j.vert_acc_before, j.vert_acc_after) {
+                (Some(a), Some(b)) => format!("{a:.1}/{b:.1}"),
+                _ => "n/a".to_string(),
+            },
+        );
+    }
+
+    // --- Provider interleaving analysis ---
+    let mut gps_alts: Vec<f64> = Vec::new();
+    let mut flp_alts: Vec<f64> = Vec::new();
+    let mut alt_diffs_gps_flp: Vec<f64> = Vec::new();
+    for i in 1..primary.len() {
+        let prev = primary[i - 1];
+        let curr = primary[i];
+        if prev.provider != curr.provider {
+            let diff = curr.altitude_m.unwrap() - prev.altitude_m.unwrap();
+            alt_diffs_gps_flp.push(diff);
+        }
+        match curr.provider {
+            FixProvider::Gps => gps_alts.push(curr.altitude_m.unwrap()),
+            FixProvider::Flp => flp_alts.push(curr.altitude_m.unwrap()),
+            _ => {}
+        }
+    }
+
+    if !alt_diffs_gps_flp.is_empty() {
+        alt_diffs_gps_flp.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let n = alt_diffs_gps_flp.len();
+        let abs_diffs: Vec<f64> = alt_diffs_gps_flp.iter().map(|d| d.abs()).collect();
+        let mut abs_sorted = abs_diffs.clone();
+        abs_sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        println!(
+            "\n  GPS↔FLP provider switches: {} transitions",
+            n,
+        );
+        println!(
+            "    |Δalt| at provider switch: median={:.1}m, p90={:.1}m, p95={:.1}m, max={:.1}m",
+            abs_sorted[n / 2],
+            abs_sorted[(n as f64 * 0.9) as usize],
+            abs_sorted[(n as f64 * 0.95) as usize],
+            abs_sorted[n - 1],
+        );
+    }
+
+    // Altitude stats per provider
+    if !gps_alts.is_empty() && !flp_alts.is_empty() {
+        gps_alts.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        flp_alts.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        println!("    GPS altitude: min={:.1}, median={:.1}, max={:.1} (n={})",
+            gps_alts[0], gps_alts[gps_alts.len()/2], gps_alts[gps_alts.len()-1], gps_alts.len());
+        println!("    FLP altitude: min={:.1}, median={:.1}, max={:.1} (n={})",
+            flp_alts[0], flp_alts[flp_alts.len()/2], flp_alts[flp_alts.len()-1], flp_alts.len());
+    }
+
+    // --- Spike segment analysis ---
+    // A "spike" = sequence where vertical velocity exceeds threshold
+    let spike_threshold = 10.0; // m/s
+    let mut spike_indices: Vec<usize> = Vec::new();
+    for j in &jumps {
+        if j.vv.abs() > spike_threshold {
+            spike_indices.push(j.idx - 1);
+            spike_indices.push(j.idx);
+        }
+    }
+    spike_indices.sort();
+    spike_indices.dedup();
+
+    // Group consecutive indices into segments
+    let mut segments: Vec<(usize, usize)> = Vec::new();
+    let mut seg_start: Option<usize> = None;
+    let mut seg_end: usize = 0;
+    for &idx in &spike_indices {
+        match seg_start {
+            None => {
+                seg_start = Some(idx);
+                seg_end = idx;
+            }
+            Some(_) => {
+                if idx <= seg_end + 2 {
+                    seg_end = idx;
+                } else {
+                    segments.push((seg_start.unwrap(), seg_end));
+                    seg_start = Some(idx);
+                    seg_end = idx;
+                }
+            }
+        }
+    }
+    if let Some(s) = seg_start {
+        segments.push((s, seg_end));
+    }
+
+    println!(
+        "\n  Spike segments (>{spike_threshold:.0} m/s threshold): {} segments, {} total points",
+        segments.len(),
+        spike_indices.len(),
+    );
+    if !segments.is_empty() {
+        println!("    {:>8} {:>8} {:>10} {:>10} {:>12}", "start", "end", "points", "t_offset", "alt_range");
+        for (s, e) in segments.iter().take(20) {
+            let alts_in_seg: Vec<f64> = (*s..=*e).map(|i| primary[i].altitude_m.unwrap()).collect();
+            let seg_min = alts_in_seg.iter().cloned().fold(f64::INFINITY, f64::min);
+            let seg_max = alts_in_seg.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+            let t_off = (primary[*s].unix_time_ms - t_start) as f64 / 1000.0;
+            println!(
+                "    {:>8} {:>8} {:>10} {:>9.0}s {:>5.0}-{:.0}m",
+                s, e, e - s + 1, t_off, seg_min, seg_max,
             );
         }
     }

@@ -5,6 +5,7 @@ import type { ProcessingResult, FixQuality } from "../../types/gnss";
 import type { FixRecord } from "../../types/gnss";
 import { accuracyToColor } from "../../utils/color";
 import { createGsiTerrainProvider } from "../../utils/gsiTerrain";
+import { filterAltitudeSpikes } from "../../utils/altitude";
 import "./CesiumMap.css";
 
 // Cesium ion token from env (optional — for PLATEAU 3D buildings)
@@ -86,16 +87,27 @@ export function CesiumMap({
       (_, i) => result.fix_qualities[i] === "Primary",
     );
 
-    // Sample terrain heights, then render with max(GPS, terrain) altitude
+    // Sample terrain heights, filter altitude spikes, then render
     clampBelowTerrain(viewer.terrainProvider, primaryFixes).then((heights) => {
       if (cancelled) return;
 
+      // Filter altitude spikes (GPS/FLP interleaving + noise)
+      const { filteredHeights, stats } = filterAltitudeSpikes(
+        primaryFixes,
+        heights,
+      );
+      if (stats.pointsReplaced > 0) {
+        console.log(
+          `Altitude filter: replaced ${stats.pointsReplaced} spike points (max deviation: ${stats.maxDeviation.toFixed(0)}m)`,
+        );
+      }
+
       viewer.entities.removeAll();
 
-      addColoredTrack(viewer, primaryFixes, heights);
+      addColoredTrack(viewer, primaryFixes, filteredHeights);
 
       if (primaryFixes.length >= 2) {
-        setupAnimationMarker(viewer, primaryFixes, heights);
+        setupAnimationMarker(viewer, primaryFixes, filteredHeights);
       }
 
       // Optional NLP layer
