@@ -1,31 +1,65 @@
 .app {
-  min-height: 100vh;
+  height: 100vh;
   display: flex;
   flex-direction: column;
   font-family: system-ui, -apple-system, sans-serif;
   color: #e0e0e0;
   background: #1a1a2e;
+  overflow: hidden;
 }
 
 .app-header {
-  padding: 1rem 2rem;
+  padding: 0.5rem 1.5rem;
   border-bottom: 1px solid #2a2a4a;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-shrink: 0;
 }
 
 .app-header h1 {
   margin: 0;
-  font-size: 1.25rem;
+  font-size: 1.1rem;
   font-weight: 600;
   letter-spacing: 0.05em;
   color: #8ab4f8;
 }
 
-.app-main {
+.device-badge {
+  font-size: 0.75rem;
+  color: #888;
+  background: #2a2a4a;
+  padding: 0.15rem 0.5rem;
+  border-radius: 4px;
+}
+
+/* Loading / idle state — centered */
+.app-main.center {
   flex: 1;
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 2rem;
+}
+
+/* Map + sidebar layout */
+.app-content {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.map-panel {
+  flex: 1;
+  min-width: 0;
+}
+
+.sidebar {
+  width: 280px;
+  flex-shrink: 0;
+  overflow-y: auto;
+  border-left: 1px solid #2a2a4a;
+  padding: 1rem;
 }
 
 /* File Loader */
@@ -92,34 +126,30 @@
   color: #e57373;
 }
 
-/* Result Summary */
-.result-summary {
-  max-width: 600px;
-  width: 100%;
-}
-
-.result-summary h2 {
-  margin: 0 0 0.5rem;
-  font-size: 1.2rem;
-}
-
-.device-info {
-  color: #888;
-  margin: 0 0 1.5rem;
+/* Result Summary (sidebar) */
+.result-summary h3 {
+  margin: 0 0 0.75rem;
+  font-size: 0.95rem;
 }
 
 .result-summary table {
   width: 100%;
   border-collapse: collapse;
-  margin-bottom: 1rem;
+  font-size: 0.8rem;
 }
 
 .result-summary td {
-  padding: 0.4rem 0.8rem;
+  padding: 0.25rem 0.4rem;
   border-bottom: 1px solid #2a2a4a;
 }
 
 .result-summary td:last-child {
   text-align: right;
   font-variant-numeric: tabular-nums;
+}
+
+.summary-counts {
+  font-size: 0.75rem;
+  color: #888;
+  margin-top: 0.75rem;
 }

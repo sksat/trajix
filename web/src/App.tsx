@@ -1,5 +1,6 @@
 import { useGnssData } from "./hooks/useGnssData";
 import { FileLoader } from "./components/FileLoader";
+import { CesiumMap } from "./components/CesiumMap";
 import type { ProcessingResult } from "./types/gnss";
 import "./App.css";
 
@@ -10,15 +11,27 @@ export default function App() {
     <div className="app">
       <header className="app-header">
         <h1>trajix</h1>
+        {state.status === "done" && state.result.header && (
+          <span className="device-badge">
+            {state.result.header.manufacturer} {state.result.header.model}
+          </span>
+        )}
       </header>
 
-      <main className="app-main">
-        {state.status !== "done" ? (
+      {state.status !== "done" ? (
+        <main className="app-main center">
           <FileLoader state={state} onFile={processFile} />
-        ) : (
-          <ResultSummary result={state.result} />
-        )}
-      </main>
+        </main>
+      ) : (
+        <div className="app-content">
+          <div className="map-panel">
+            <CesiumMap result={state.result} />
+          </div>
+          <aside className="sidebar">
+            <ResultSummary result={state.result} />
+          </aside>
+        </div>
+      )}
     </div>
   );
 }
@@ -27,13 +40,7 @@ function ResultSummary({ result }: { result: ProcessingResult }) {
   const c = result.record_counts;
   return (
     <div className="result-summary">
-      <h2>Parsed {result.lines_parsed.toLocaleString()} lines</h2>
-      {result.header && (
-        <p className="device-info">
-          {result.header.manufacturer} {result.header.model} (
-          {result.header.version})
-        </p>
-      )}
+      <h3>Parsed {result.lines_parsed.toLocaleString()} lines</h3>
       <table>
         <tbody>
           <tr>
@@ -78,10 +85,9 @@ function ResultSummary({ result }: { result: ProcessingResult }) {
           </tr>
         </tbody>
       </table>
-      <p>
+      <p className="summary-counts">
         {result.fixes.length.toLocaleString()} fixes,{" "}
         {result.status_epochs.length.toLocaleString()} status epochs,{" "}
-        {result.fix_epochs.length.toLocaleString()} fix epochs,{" "}
         {result.dr_trajectory.length.toLocaleString()} DR points
       </p>
     </div>

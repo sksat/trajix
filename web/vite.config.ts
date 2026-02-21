@@ -1,9 +1,10 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import wasm from "vite-plugin-wasm";
+import cesium from "vite-plugin-cesium";
 
 export default defineConfig({
-  plugins: [react(), wasm()],
+  plugins: [react(), wasm(), cesium()],
   worker: {
     plugins: () => [wasm()],
     format: "es",

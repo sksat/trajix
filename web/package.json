@@ -10,6 +10,7 @@
     "wasm:build": "wasm-pack build ../crates/trajix-wasm --target web --out-dir pkg"
   },
   "dependencies": {
+    "cesium": "^1.138.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "trajix-wasm": "file:../crates/trajix-wasm/pkg"
@@ -20,9 +21,12 @@
     "@vitejs/plugin-react": "^4.5.0",
     "typescript": "~5.8.0",
     "vite": "^6.3.0",
+    "vite-plugin-cesium": "^1.2.23",
     "vite-plugin-wasm": "^3.4.1"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["esbuild"]
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
   }
 }

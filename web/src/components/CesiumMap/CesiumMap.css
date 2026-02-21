@@ -1,0 +1,9 @@
+.cesium-map-container {
+  width: 100%;
+  height: 100%;
+}
+
+/* Override Cesium's default credit styling */
+.cesium-widget-credits {
+  font-size: 10px !important;
+}
