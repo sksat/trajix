@@ -110,8 +110,7 @@ impl RawRecord {
         }
 
         let constellation_u8 = parse_u32(fields[28], "ConstellationType")? as u8;
-        let constellation = ConstellationType::from_u8(constellation_u8)
-            .ok_or(ParseError::UnknownConstellation(constellation_u8))?;
+        let constellation = ConstellationType::from_u8(constellation_u8);
 
         Ok(RawRecord {
             utc_time_ms: parse_i64(fields[1], "utcTimeMillis")?,

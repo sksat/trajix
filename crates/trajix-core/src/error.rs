@@ -21,9 +21,6 @@ pub enum ParseError {
     #[error("unknown provider: {0}")]
     UnknownProvider(String),
 
-    #[error("unknown constellation type: {0}")]
-    UnknownConstellation(u8),
-
     #[error("line {line_number}: {source}")]
     AtLine {
         line_number: u64,

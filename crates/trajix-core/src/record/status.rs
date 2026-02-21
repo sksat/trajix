@@ -51,8 +51,7 @@ impl StatusRecord {
 
         let constellation_u8 =
             parse_u32(fields[4], "ConstellationType")? as u8;
-        let constellation = ConstellationType::from_u8(constellation_u8)
-            .ok_or(ParseError::UnknownConstellation(constellation_u8))?;
+        let constellation = ConstellationType::from_u8(constellation_u8);
 
         Ok(StatusRecord {
             unix_time_ms,
@@ -221,14 +220,19 @@ mod tests {
     }
 
     #[test]
-    fn parse_status_unknown_constellation() {
-        // constellation type 2 is SBAS, which we don't support
+    fn parse_status_sbas_constellation() {
+        // constellation type 2 is SBAS — should parse without error
         let line = "Status,,46,0,2,100,1575420030,25.0,180.0,45.0,1,1,1,22.0";
-        let result = StatusRecord::parse(line);
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            ParseError::UnknownConstellation(c) => assert_eq!(c, 2),
-            _ => panic!("expected UnknownConstellation error"),
-        }
+        let r = StatusRecord::parse(line).unwrap();
+        assert_eq!(r.constellation, ConstellationType::Sbas);
+        assert_eq!(r.svid, 100);
+    }
+
+    #[test]
+    fn parse_status_unknown_constellation() {
+        // constellation type 99 is unknown — should still parse
+        let line = "Status,,46,0,99,100,1575420030,25.0,180.0,45.0,1,1,1,22.0";
+        let r = StatusRecord::parse(line).unwrap();
+        assert_eq!(r.constellation, ConstellationType::Unknown(99));
     }
 }

@@ -1,46 +1,68 @@
 use serde::{Deserialize, Serialize};
 
 /// GNSS constellation type as defined by Android GnssStatus.
+///
+/// Known values: GPS(1), Sbas(2), Glonass(3), Qzss(4), BeiDou(5), Galileo(6), Irnss(7).
+/// Unknown values are preserved as `Unknown(u8)` to avoid parse failures.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[repr(u8)]
 pub enum ConstellationType {
-    Gps = 1,
-    Glonass = 3,
-    Qzss = 4,
-    BeiDou = 5,
-    Galileo = 6,
+    Gps,
+    Sbas,
+    Glonass,
+    Qzss,
+    BeiDou,
+    Galileo,
+    Irnss,
+    Unknown(u8),
 }
 
 impl ConstellationType {
-    pub fn from_u8(value: u8) -> Option<Self> {
+    pub fn from_u8(value: u8) -> Self {
         match value {
-            1 => Some(Self::Gps),
-            3 => Some(Self::Glonass),
-            4 => Some(Self::Qzss),
-            5 => Some(Self::BeiDou),
-            6 => Some(Self::Galileo),
-            _ => None,
+            1 => Self::Gps,
+            2 => Self::Sbas,
+            3 => Self::Glonass,
+            4 => Self::Qzss,
+            5 => Self::BeiDou,
+            6 => Self::Galileo,
+            7 => Self::Irnss,
+            other => Self::Unknown(other),
         }
     }
 
     pub fn as_u8(self) -> u8 {
-        self as u8
+        match self {
+            Self::Gps => 1,
+            Self::Sbas => 2,
+            Self::Glonass => 3,
+            Self::Qzss => 4,
+            Self::BeiDou => 5,
+            Self::Galileo => 6,
+            Self::Irnss => 7,
+            Self::Unknown(v) => v,
+        }
     }
 
     pub fn name(self) -> &'static str {
         match self {
             Self::Gps => "GPS",
+            Self::Sbas => "SBAS",
             Self::Glonass => "GLONASS",
             Self::Qzss => "QZSS",
             Self::BeiDou => "BeiDou",
             Self::Galileo => "Galileo",
+            Self::Irnss => "IRNSS",
+            Self::Unknown(_) => "Unknown",
         }
     }
 }
 
 impl std::fmt::Display for ConstellationType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.name())
+        match self {
+            Self::Unknown(v) => write!(f, "Unknown({v})"),
+            _ => f.write_str(self.name()),
+        }
     }
 }
 
@@ -161,32 +183,41 @@ mod tests {
     fn constellation_type_roundtrip() {
         let cases = [
             (1u8, ConstellationType::Gps),
+            (2, ConstellationType::Sbas),
             (3, ConstellationType::Glonass),
             (4, ConstellationType::Qzss),
             (5, ConstellationType::BeiDou),
             (6, ConstellationType::Galileo),
+            (7, ConstellationType::Irnss),
         ];
         for (val, expected) in cases {
-            let ct = ConstellationType::from_u8(val).unwrap();
+            let ct = ConstellationType::from_u8(val);
             assert_eq!(ct, expected);
             assert_eq!(ct.as_u8(), val);
         }
     }
 
     #[test]
-    fn constellation_type_unknown() {
-        assert!(ConstellationType::from_u8(0).is_none());
-        assert!(ConstellationType::from_u8(2).is_none());
-        assert!(ConstellationType::from_u8(7).is_none());
+    fn constellation_type_unknown_preserved() {
+        let ct = ConstellationType::from_u8(0);
+        assert_eq!(ct, ConstellationType::Unknown(0));
+        assert_eq!(ct.as_u8(), 0);
+
+        let ct = ConstellationType::from_u8(99);
+        assert_eq!(ct, ConstellationType::Unknown(99));
+        assert_eq!(ct.as_u8(), 99);
     }
 
     #[test]
     fn constellation_type_display() {
         assert_eq!(ConstellationType::Gps.to_string(), "GPS");
+        assert_eq!(ConstellationType::Sbas.to_string(), "SBAS");
         assert_eq!(ConstellationType::Glonass.to_string(), "GLONASS");
         assert_eq!(ConstellationType::Qzss.to_string(), "QZSS");
         assert_eq!(ConstellationType::BeiDou.to_string(), "BeiDou");
         assert_eq!(ConstellationType::Galileo.to_string(), "Galileo");
+        assert_eq!(ConstellationType::Irnss.to_string(), "IRNSS");
+        assert_eq!(ConstellationType::Unknown(99).to_string(), "Unknown(99)");
     }
 
     #[test]
