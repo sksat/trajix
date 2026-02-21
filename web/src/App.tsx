@@ -1,13 +1,20 @@
-import { useState } from "react";
+import { useCallback, useState } from "react";
+import type * as Cesium from "cesium";
 import { useGnssData } from "./hooks/useGnssData";
 import { FileLoader } from "./components/FileLoader";
 import { CesiumMap } from "./components/CesiumMap";
+import { PlaybackControls } from "./components/PlaybackControls";
 import type { ProcessingResult } from "./types/gnss";
 import "./App.css";
 
 export default function App() {
   const { state, processFile } = useGnssData();
   const [showNlp, setShowNlp] = useState(false);
+  const [viewer, setViewer] = useState<Cesium.Viewer | null>(null);
+
+  const handleViewerReady = useCallback((v: Cesium.Viewer) => {
+    setViewer(v);
+  }, []);
 
   return (
     <div className="app">
@@ -27,7 +34,12 @@ export default function App() {
       ) : (
         <div className="app-content">
           <div className="map-panel">
-            <CesiumMap result={state.result} showNlp={showNlp} />
+            <CesiumMap
+              result={state.result}
+              showNlp={showNlp}
+              onViewerReady={handleViewerReady}
+            />
+            <PlaybackControls viewer={viewer} />
           </div>
           <aside className="sidebar">
             <ResultSummary result={state.result} />

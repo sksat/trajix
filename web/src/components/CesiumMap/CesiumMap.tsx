@@ -14,12 +14,20 @@ const ION_TOKEN = import.meta.env.VITE_CESIUM_ION_TOKEN as string | undefined;
 /// If consecutive Primary fixes are more than this apart, break the polyline.
 const POLYLINE_GAP_MS = 3000;
 
+/// Default playback speed multiplier (50x = ~8 min for 6.5h recording).
+const DEFAULT_MULTIPLIER = 50;
+
 interface CesiumMapProps {
   result: ProcessingResult;
   showNlp?: boolean;
+  onViewerReady?: (viewer: Cesium.Viewer) => void;
 }
 
-export function CesiumMap({ result, showNlp = false }: CesiumMapProps) {
+export function CesiumMap({
+  result,
+  showNlp = false,
+  onViewerReady,
+}: CesiumMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<Cesium.Viewer | null>(null);
 
@@ -56,68 +64,194 @@ export function CesiumMap({ result, showNlp = false }: CesiumMapProps) {
       infoBox: false,
     });
 
-    // Amplify terrain relief (GSI DEM at this scale benefits from exaggeration)
-    viewer.scene.verticalExaggeration = 2.0;
-
     viewerRef.current = viewer;
+    onViewerReady?.(viewer);
 
     return () => {
       viewer.destroy();
       viewerRef.current = null;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Render track when result or NLP toggle changes
+  // Render track + animation marker when result or NLP toggle changes.
+  // Terrain sampling is async, so we use a cancellation flag.
   useEffect(() => {
     const viewer = viewerRef.current;
     if (!viewer || result.fixes.length === 0) return;
 
-    viewer.entities.removeAll();
+    let cancelled = false;
 
-    // Primary track: GPS + FLP only
     const primaryFixes = result.fixes.filter(
       (_, i) => result.fix_qualities[i] === "Primary",
     );
-    addColoredTrack(viewer, primaryFixes);
 
-    // Optional NLP layer
-    if (showNlp) {
-      const nlpFixes: { fix: FixRecord; quality: FixQuality }[] = [];
-      for (let i = 0; i < result.fixes.length; i++) {
-        const q = result.fix_qualities[i]!;
-        if (q === "GapFallback" || q === "Rejected") {
-          nlpFixes.push({ fix: result.fixes[i]!, quality: q });
-        }
+    // Sample terrain heights, then render with max(GPS, terrain) altitude
+    clampBelowTerrain(viewer.terrainProvider, primaryFixes).then((heights) => {
+      if (cancelled) return;
+
+      viewer.entities.removeAll();
+
+      addColoredTrack(viewer, primaryFixes, heights);
+
+      if (primaryFixes.length >= 2) {
+        setupAnimationMarker(viewer, primaryFixes, heights);
       }
-      addNlpPoints(viewer, nlpFixes);
-    }
 
-    // Fly to entities with a tilted camera so terrain relief is visible
-    viewer.flyTo(viewer.entities, {
-      offset: new Cesium.HeadingPitchRange(
-        0,
-        Cesium.Math.toRadians(-45),
-        0, // auto range
-      ),
+      // Optional NLP layer
+      if (showNlp) {
+        const nlpFixes: { fix: FixRecord; quality: FixQuality }[] = [];
+        for (let i = 0; i < result.fixes.length; i++) {
+          const q = result.fix_qualities[i]!;
+          if (q === "GapFallback" || q === "Rejected") {
+            nlpFixes.push({ fix: result.fixes[i]!, quality: q });
+          }
+        }
+        addNlpPoints(viewer, nlpFixes);
+      }
+
+      // Fly to entities with a tilted camera so terrain relief is visible
+      viewer.flyTo(viewer.entities, {
+        offset: new Cesium.HeadingPitchRange(
+          0,
+          Cesium.Math.toRadians(-45),
+          0, // auto range
+        ),
+      });
+
+      // Load PLATEAU 3D buildings if ion token available
+      if (ION_TOKEN) {
+        Cesium.Cesium3DTileset.fromIonAssetId(2602291).then((tileset) => {
+          if (!cancelled) viewer.scene.primitives.add(tileset);
+        });
+      }
     });
 
-    // Load PLATEAU 3D buildings if ion token available
-    if (ION_TOKEN) {
-      Cesium.Cesium3DTileset.fromIonAssetId(2602291).then((tileset) => {
-        viewer.scene.primitives.add(tileset);
-      });
-    }
+    return () => {
+      cancelled = true;
+    };
   }, [result, showNlp]);
 
   return <div ref={containerRef} className="cesium-map-container" />;
 }
+
+// ────────────────────────────────────────────
+// Terrain height adjustment
+// ────────────────────────────────────────────
+
+/**
+ * Sample terrain heights at fix positions and return adjusted altitudes:
+ *   max(gps_altitude, terrain_altitude)
+ *
+ * This ensures entities never sink below the terrain surface while
+ * preserving above-ground altitude (e.g., ropeway / bridge sections).
+ * GPS vertical accuracy is inherently lower than horizontal, so
+ * occasional underground values are expected and corrected here.
+ */
+async function clampBelowTerrain(
+  terrainProvider: Cesium.TerrainProvider,
+  fixes: FixRecord[],
+): Promise<number[]> {
+  const cartographics = fixes.map((f) =>
+    Cesium.Cartographic.fromDegrees(f.longitude_deg, f.latitude_deg),
+  );
+
+  try {
+    await Cesium.sampleTerrainMostDetailed(terrainProvider, cartographics);
+  } catch {
+    // Terrain sampling failed — fall back to raw GPS altitude
+    return fixes.map((f) => f.altitude_m ?? 0);
+  }
+
+  return fixes.map((f, i) => {
+    const gpsAlt = f.altitude_m ?? 0;
+    const terrainAlt = cartographics[i]!.height;
+    if (!isFinite(terrainAlt)) return gpsAlt;
+    return Math.max(gpsAlt, terrainAlt);
+  });
+}
+
+// ────────────────────────────────────────────
+// Animation marker
+// ────────────────────────────────────────────
+
+/**
+ * Build a SampledPositionProperty from primary fixes and add an animated marker.
+ * Configures the Cesium Clock for playback (paused by default).
+ */
+function setupAnimationMarker(
+  viewer: Cesium.Viewer,
+  primaryFixes: FixRecord[],
+  heights: number[],
+): Cesium.Entity {
+  const startMs = primaryFixes[0]!.unix_time_ms;
+  const endMs = primaryFixes[primaryFixes.length - 1]!.unix_time_ms;
+
+  const startTime = Cesium.JulianDate.fromDate(new Date(startMs));
+  const stopTime = Cesium.JulianDate.fromDate(new Date(endMs));
+
+  // Build SampledPositionProperty from all primary fixes
+  const sampledPosition = new Cesium.SampledPositionProperty();
+  const times: Cesium.JulianDate[] = new Array(primaryFixes.length);
+  const positions: Cesium.Cartesian3[] = new Array(primaryFixes.length);
+
+  for (let i = 0; i < primaryFixes.length; i++) {
+    const f = primaryFixes[i]!;
+    times[i] = Cesium.JulianDate.fromDate(new Date(f.unix_time_ms));
+    positions[i] = Cesium.Cartesian3.fromDegrees(
+      f.longitude_deg,
+      f.latitude_deg,
+      heights[i]!,
+    );
+  }
+  sampledPosition.addSamples(times, positions);
+
+  // Linear interpolation (no overshoot at gaps)
+  sampledPosition.setInterpolationOptions({
+    interpolationDegree: 1,
+    interpolationAlgorithm: Cesium.LinearApproximation,
+  });
+
+  // Configure Clock for playback
+  const clock = viewer.clock;
+  clock.startTime = startTime.clone();
+  clock.stopTime = stopTime.clone();
+  clock.currentTime = startTime.clone();
+  clock.multiplier = DEFAULT_MULTIPLIER;
+  clock.clockRange = Cesium.ClockRange.CLAMPED;
+  clock.shouldAnimate = false; // PlaybackControls will start it
+
+  // Add marker entity with terrain-adjusted altitude.
+  // disableDepthTestDistance keeps it visible through terrain at grazing angles.
+  const marker = viewer.entities.add({
+    position: sampledPosition,
+    point: {
+      pixelSize: 14,
+      color: Cesium.Color.fromCssColorString("#8ab4f8"),
+      outlineColor: Cesium.Color.WHITE,
+      outlineWidth: 2,
+      disableDepthTestDistance: Number.POSITIVE_INFINITY,
+    },
+    viewFrom: new Cesium.Cartesian3(0, -200, 300),
+  });
+
+  return marker;
+}
+
+// ────────────────────────────────────────────
+// Static track polyline
+// ────────────────────────────────────────────
 
 /**
  * Add track as colored polyline segments (Primary fixes only).
  * Groups consecutive fixes with similar accuracy into segments.
  * Breaks polyline at time gaps > POLYLINE_GAP_MS.
  */
-function addColoredTrack(viewer: Cesium.Viewer, fixes: FixRecord[]) {
+function addColoredTrack(
+  viewer: Cesium.Viewer,
+  fixes: FixRecord[],
+  heights: number[],
+) {
   if (fixes.length < 2) return;
 
   const BUCKET_THRESHOLDS = [5, 10, 20, 50, 100];
@@ -145,26 +279,28 @@ function addColoredTrack(viewer: Cesium.Viewer, fixes: FixRecord[]) {
     if (isEnd || isGap || bucketChanged) {
       // Flush segment [segStart, i] — include overlap point for continuity
       const end = Math.min(i, fixes.length - 1);
-      const segFixes = fixes.slice(segStart, end + 1);
 
-      if (segFixes.length >= 2) {
-        const positions = segFixes.map((f) =>
-          Cesium.Cartesian3.fromDegrees(
-            f.longitude_deg,
-            f.latitude_deg,
-            f.altitude_m ?? 0,
-          ),
-        );
+      if (end - segStart + 1 >= 2) {
+        const positions: Cesium.Cartesian3[] = [];
+        for (let j = segStart; j <= end; j++) {
+          const f = fixes[j]!;
+          positions.push(
+            Cesium.Cartesian3.fromDegrees(
+              f.longitude_deg,
+              f.latitude_deg,
+              heights[j]!,
+            ),
+          );
+        }
 
-        const midFix = segFixes[Math.floor(segFixes.length / 2)]!;
-        const color = accuracyToColor(midFix.accuracy_m);
+        const midIdx = segStart + Math.floor((end - segStart) / 2);
+        const color = accuracyToColor(fixes[midIdx]!.accuracy_m);
 
         viewer.entities.add({
           polyline: {
             positions,
             width: 3,
             material: new Cesium.ColorMaterialProperty(color),
-            clampToGround: true,
           },
         });
       }
@@ -174,6 +310,10 @@ function addColoredTrack(viewer: Cesium.Viewer, fixes: FixRecord[]) {
     }
   }
 }
+
+// ────────────────────────────────────────────
+// NLP points
+// ────────────────────────────────────────────
 
 /**
  * Add NLP fixes as semi-transparent points with accuracy circles.
@@ -204,6 +344,7 @@ function addNlpPoints(
         pixelSize: isGapFallback ? 6 : 4,
         color: pointColor,
         outlineWidth: 0,
+        disableDepthTestDistance: Number.POSITIVE_INFINITY,
       },
     });
 
