@@ -1,7 +1,8 @@
 import { useEffect, useRef } from "react";
 import * as Cesium from "cesium";
 import "cesium/Build/Cesium/Widgets/widgets.css";
-import type { ProcessingResult } from "../../types/gnss";
+import type { ProcessingResult, FixQuality } from "../../types/gnss";
+import type { FixRecord } from "../../types/gnss";
 import { accuracyToColor } from "../../utils/color";
 import { createGsiTerrainProvider } from "../../utils/gsiTerrain";
 import "./CesiumMap.css";
@@ -9,11 +10,16 @@ import "./CesiumMap.css";
 // Cesium ion token from env (optional — for PLATEAU 3D buildings)
 const ION_TOKEN = import.meta.env.VITE_CESIUM_ION_TOKEN as string | undefined;
 
+/// Gap threshold for breaking polylines (ms).
+/// If consecutive Primary fixes are more than this apart, break the polyline.
+const POLYLINE_GAP_MS = 3000;
+
 interface CesiumMapProps {
   result: ProcessingResult;
+  showNlp?: boolean;
 }
 
-export function CesiumMap({ result }: CesiumMapProps) {
+export function CesiumMap({ result, showNlp = false }: CesiumMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<Cesium.Viewer | null>(null);
 
@@ -61,13 +67,30 @@ export function CesiumMap({ result }: CesiumMapProps) {
     };
   }, []);
 
-  // Render track when result changes
+  // Render track when result or NLP toggle changes
   useEffect(() => {
     const viewer = viewerRef.current;
     if (!viewer || result.fixes.length === 0) return;
 
     viewer.entities.removeAll();
-    addColoredTrack(viewer, result.fixes);
+
+    // Primary track: GPS + FLP only
+    const primaryFixes = result.fixes.filter(
+      (_, i) => result.fix_qualities[i] === "Primary",
+    );
+    addColoredTrack(viewer, primaryFixes);
+
+    // Optional NLP layer
+    if (showNlp) {
+      const nlpFixes: { fix: FixRecord; quality: FixQuality }[] = [];
+      for (let i = 0; i < result.fixes.length; i++) {
+        const q = result.fix_qualities[i]!;
+        if (q === "GapFallback" || q === "Rejected") {
+          nlpFixes.push({ fix: result.fixes[i]!, quality: q });
+        }
+      }
+      addNlpPoints(viewer, nlpFixes);
+    }
 
     // Fly to entities with a tilted camera so terrain relief is visible
     viewer.flyTo(viewer.entities, {
@@ -84,20 +107,17 @@ export function CesiumMap({ result }: CesiumMapProps) {
         viewer.scene.primitives.add(tileset);
       });
     }
-  }, [result]);
+  }, [result, showNlp]);
 
   return <div ref={containerRef} className="cesium-map-container" />;
 }
 
 /**
- * Add track as colored polyline segments.
- * Groups consecutive fixes with similar accuracy into segments
- * to reduce entity count while preserving color variation.
+ * Add track as colored polyline segments (Primary fixes only).
+ * Groups consecutive fixes with similar accuracy into segments.
+ * Breaks polyline at time gaps > POLYLINE_GAP_MS.
  */
-function addColoredTrack(
-  viewer: Cesium.Viewer,
-  fixes: ProcessingResult["fixes"],
-) {
+function addColoredTrack(viewer: Cesium.Viewer, fixes: FixRecord[]) {
   if (fixes.length < 2) return;
 
   const BUCKET_THRESHOLDS = [5, 10, 20, 50, 100];
@@ -114,9 +134,15 @@ function addColoredTrack(
   let currentBucket = bucket(fixes[0]!.accuracy_m);
 
   for (let i = 1; i <= fixes.length; i++) {
-    const b = i < fixes.length ? bucket(fixes[i]!.accuracy_m) : -1;
+    // Detect time gap or accuracy bucket change or end of array
+    const isEnd = i === fixes.length;
+    const isGap =
+      !isEnd &&
+      fixes[i]!.unix_time_ms - fixes[i - 1]!.unix_time_ms > POLYLINE_GAP_MS;
+    const b = isEnd ? -1 : bucket(fixes[i]!.accuracy_m);
+    const bucketChanged = b !== currentBucket;
 
-    if (b !== currentBucket || i === fixes.length) {
+    if (isEnd || isGap || bucketChanged) {
       // Flush segment [segStart, i] — include overlap point for continuity
       const end = Math.min(i, fixes.length - 1);
       const segFixes = fixes.slice(segStart, end + 1);
@@ -145,6 +171,59 @@ function addColoredTrack(
 
       segStart = i;
       currentBucket = b;
+    }
+  }
+}
+
+/**
+ * Add NLP fixes as semi-transparent points with accuracy circles.
+ */
+function addNlpPoints(
+  viewer: Cesium.Viewer,
+  fixes: { fix: FixRecord; quality: FixQuality }[],
+) {
+  for (const { fix: f, quality } of fixes) {
+    const position = Cesium.Cartesian3.fromDegrees(
+      f.longitude_deg,
+      f.latitude_deg,
+      f.altitude_m ?? 0,
+    );
+
+    const isGapFallback = quality === "GapFallback";
+    const pointColor = isGapFallback
+      ? Cesium.Color.ORANGE.withAlpha(0.7)
+      : Cesium.Color.RED.withAlpha(0.4);
+    const circleColor = isGapFallback
+      ? Cesium.Color.ORANGE.withAlpha(0.15)
+      : Cesium.Color.RED.withAlpha(0.08);
+
+    // Point marker
+    viewer.entities.add({
+      position,
+      point: {
+        pixelSize: isGapFallback ? 6 : 4,
+        color: pointColor,
+        outlineWidth: 0,
+      },
+    });
+
+    // Accuracy circle
+    const accuracy = f.accuracy_m ?? 100;
+    if (accuracy > 0) {
+      viewer.entities.add({
+        position: Cesium.Cartesian3.fromDegrees(
+          f.longitude_deg,
+          f.latitude_deg,
+        ),
+        ellipse: {
+          semiMajorAxis: accuracy,
+          semiMinorAxis: accuracy,
+          material: new Cesium.ColorMaterialProperty(circleColor),
+          outline: true,
+          outlineColor: pointColor,
+          outlineWidth: 1,
+        },
+      });
     }
   }
 }

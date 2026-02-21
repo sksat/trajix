@@ -153,3 +153,48 @@
   color: #888;
   margin-top: 0.75rem;
 }
+
+/* Layer Controls */
+.layer-controls {
+  margin-top: 1.25rem;
+  padding-top: 1rem;
+  border-top: 1px solid #2a2a4a;
+}
+
+.layer-controls h3 {
+  margin: 0 0 0.5rem;
+  font-size: 0.95rem;
+}
+
+.toggle-label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.toggle-label input[type="checkbox"] {
+  accent-color: #8ab4f8;
+}
+
+/* Fix Quality Summary */
+.fix-quality-summary {
+  margin-top: 0.5rem;
+}
+
+.fix-quality-summary table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.75rem;
+  color: #999;
+}
+
+.fix-quality-summary td {
+  padding: 0.15rem 0.4rem;
+}
+
+.fix-quality-summary td:last-child {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}

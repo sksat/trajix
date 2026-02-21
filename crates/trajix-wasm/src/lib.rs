@@ -125,6 +125,25 @@ struct RotationValue {
 }
 
 // ────────────────────────────────────────────
+// Fix quality classification
+// ────────────────────────────────────────────
+
+/// Quality tag for each fix record.
+///
+/// - `Primary`: GPS or FLP fix
+/// - `GapFallback`: NLP fix during a GPS/FLP coverage gap (>5s without GPS/FLP)
+/// - `Rejected`: NLP fix redundant with nearby GPS/FLP coverage
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Tsify)]
+enum FixQuality {
+    Primary,
+    GapFallback,
+    Rejected,
+}
+
+/// Gap threshold: if no GPS/FLP fix within this duration, NLP is considered gap-fallback.
+const GAP_THRESHOLD_MS: i64 = 5000;
+
+// ────────────────────────────────────────────
 // GnssLogProcessor: chunk-based streaming parser
 // ────────────────────────────────────────────
 
@@ -156,6 +175,10 @@ pub struct GnssLogProcessor {
 
     // ─── Fix records (kept in full — only ~52K, ~8MB) ───
     fixes: Vec<FixRecord>,
+    /// Parallel quality tag for each fix (same index as `fixes`).
+    fix_qualities: Vec<FixQuality>,
+    /// Last GPS/FLP fix timestamp for NLP gap detection.
+    last_gps_flp_time_ms: Option<i64>,
 
     // ─── Streaming processors (consume records, don't store them) ───
     aggregator: EpochAggregator,
@@ -201,6 +224,8 @@ impl GnssLogProcessor {
             header_lines: Vec::new(),
             header_done: false,
             fixes: Vec::new(),
+            fix_qualities: Vec::new(),
+            last_gps_flp_time_ms: None,
             aggregator: EpochAggregator::new(DEFAULT_EPOCH_MS),
             dead_reckoning: DeadReckoning::new(DrConfig::default()),
             accel_decimator: StreamingDecimator::new(SENSOR_DECIMATE_MS),
@@ -303,6 +328,7 @@ impl GnssLogProcessor {
 
             // Fix records (full resolution, ~52K)
             fixes: self.fixes,
+            fix_qualities: self.fix_qualities,
 
             // Epoch summaries (aggregated from Status + Fix)
             status_epochs: status_epochs
@@ -425,8 +451,27 @@ impl GnssLogProcessor {
                         self.aggregator.push(Record::Fix(f.clone()));
                         // Feed to Dead Reckoning
                         self.dead_reckoning.push_fix(&f);
-                        // Keep for map rendering
+
+                        // Classify fix quality by provider
+                        use trajix_core::types::FixProvider;
+                        let quality = match f.provider {
+                            FixProvider::Gps | FixProvider::Flp => {
+                                self.last_gps_flp_time_ms = Some(f.unix_time_ms);
+                                FixQuality::Primary
+                            }
+                            FixProvider::Nlp => {
+                                // NLP: only useful during GPS/FLP gaps
+                                match self.last_gps_flp_time_ms {
+                                    Some(t) if (f.unix_time_ms - t) <= GAP_THRESHOLD_MS => {
+                                        FixQuality::Rejected
+                                    }
+                                    _ => FixQuality::GapFallback,
+                                }
+                            }
+                        };
+
                         self.fixes.push(f);
+                        self.fix_qualities.push(quality);
                     }
                     Record::Status(mut s) => {
                         self.status_count += 1;
@@ -532,6 +577,8 @@ struct ProcessingResult {
 
     /// Fix records (full resolution, ~52K records for map rendering).
     fixes: Vec<FixRecord>,
+    /// Parallel quality tags (same index as `fixes`).
+    fix_qualities: Vec<FixQuality>,
 
     /// Epoch-aggregated satellite status (1-second bins).
     status_epochs: Vec<StatusEpochJs>,
@@ -647,7 +694,44 @@ mod tests {
         proc.feed(chunk);
         assert_eq!(proc.fix_count, 2);
         assert_eq!(proc.fixes.len(), 2);
+        assert_eq!(proc.fix_qualities.len(), 2);
         assert_eq!(proc.skipped_count, 1);
+        // Both GPS and FLP are Primary
+        assert_eq!(proc.fix_qualities[0], FixQuality::Primary);
+        assert_eq!(proc.fix_qualities[1], FixQuality::Primary);
+    }
+
+    #[test]
+    fn nlp_rejected_when_gps_recent() {
+        let mut proc = GnssLogProcessor::new();
+        // GPS fix at t=1000
+        proc.feed(b"Fix,GPS,36.212,140.097,281.3,0.0,3.79,,1771641748000,0.07,,2091905471128467,3.66,0,,,\n");
+        // NLP fix 2s later (within 5s gap threshold) — should be Rejected
+        proc.feed(b"Fix,NLP,36.500,140.500,,,400.0,,1771641750000,,,,,,,,\n");
+        assert_eq!(proc.fixes.len(), 2);
+        assert_eq!(proc.fix_qualities[0], FixQuality::Primary);
+        assert_eq!(proc.fix_qualities[1], FixQuality::Rejected);
+    }
+
+    #[test]
+    fn nlp_gap_fallback_when_no_recent_gps() {
+        let mut proc = GnssLogProcessor::new();
+        // GPS fix at t=1000
+        proc.feed(b"Fix,GPS,36.212,140.097,281.3,0.0,3.79,,1771641748000,0.07,,2091905471128467,3.66,0,,,\n");
+        // NLP fix 10s later (beyond 5s gap threshold) — should be GapFallback
+        proc.feed(b"Fix,NLP,36.500,140.500,,,82.5,,1771641758000,,,,,,,,\n");
+        assert_eq!(proc.fixes.len(), 2);
+        assert_eq!(proc.fix_qualities[0], FixQuality::Primary);
+        assert_eq!(proc.fix_qualities[1], FixQuality::GapFallback);
+    }
+
+    #[test]
+    fn nlp_gap_fallback_when_no_gps_at_all() {
+        let mut proc = GnssLogProcessor::new();
+        // NLP fix with no prior GPS/FLP — should be GapFallback
+        proc.feed(b"Fix,NLP,36.500,140.500,,,82.5,,1771641758000,,,,,,,,\n");
+        assert_eq!(proc.fixes.len(), 1);
+        assert_eq!(proc.fix_qualities[0], FixQuality::GapFallback);
     }
 
     #[test]

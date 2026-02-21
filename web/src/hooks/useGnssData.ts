@@ -44,6 +44,8 @@ export function useGnssData() {
           break;
 
         case "result":
+          // Debug: expose result to console
+          (globalThis as any).__gnssResult = msg.data;
           setState({ status: "done", result: msg.data });
           worker.terminate();
           workerRef.current = null;

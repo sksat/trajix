@@ -8,6 +8,7 @@
 export type {
   ProcessingResult,
   RecordCounts,
+  FixQuality,
   StatusEpochJs,
   ConstellationStatsJs,
   FixEpochJs,

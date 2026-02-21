@@ -136,6 +136,10 @@ fn analyze_fixes(fixes: &[FixRecord]) {
         }
     }
 
+    // Coverage gap analysis: where does NLP appear relative to GPS/FLP?
+    println!("\n=== Coverage Gap Analysis ===");
+    analyze_coverage_gaps(fixes);
+
     // Consecutive fix jump analysis (all providers mixed, sorted by time)
     println!("\n=== Consecutive Fix Jumps ===");
     analyze_jumps(fixes);
@@ -147,6 +151,159 @@ fn analyze_fixes(fixes: &[FixRecord]) {
             sorted.sort_by_key(|f| f.unix_time_ms);
             println!("\n  --- Jumps within {} only ---", provider.as_str());
             analyze_jumps_ref(&sorted);
+        }
+    }
+}
+
+fn analyze_coverage_gaps(fixes: &[FixRecord]) {
+    // Sort by time
+    let mut sorted: Vec<&FixRecord> = fixes.iter().collect();
+    sorted.sort_by_key(|f| f.unix_time_ms);
+
+    if sorted.is_empty() {
+        return;
+    }
+
+    let t_start = sorted[0].unix_time_ms;
+    let t_end = sorted[sorted.len() - 1].unix_time_ms;
+    let total_s = (t_end - t_start) as f64 / 1000.0;
+    println!("  Total time span: {:.0}s ({:.1} hours)", total_s, total_s / 3600.0);
+
+    // Find GPS/FLP coverage gaps (periods where no GPS/FLP fix for > threshold)
+    let gps_flp: Vec<&FixRecord> = sorted
+        .iter()
+        .filter(|f| f.provider == FixProvider::Gps || f.provider == FixProvider::Flp)
+        .copied()
+        .collect();
+
+    let nlp_only: Vec<&FixRecord> = sorted
+        .iter()
+        .filter(|f| f.provider == FixProvider::Nlp)
+        .copied()
+        .collect();
+
+    println!("  GPS+FLP fixes: {}", gps_flp.len());
+    println!("  NLP fixes: {}", nlp_only.len());
+
+    if gps_flp.is_empty() {
+        println!("  No GPS/FLP fixes — NLP is the only source.");
+        return;
+    }
+
+    // Detect gaps in GPS/FLP coverage
+    let gap_threshold_s = 5.0; // 5 seconds without GPS/FLP = gap
+    let mut gaps: Vec<(i64, i64)> = Vec::new(); // (gap_start_ms, gap_end_ms)
+
+    // Gap before first GPS/FLP fix
+    if gps_flp[0].unix_time_ms - t_start > (gap_threshold_s * 1000.0) as i64 {
+        gaps.push((t_start, gps_flp[0].unix_time_ms));
+    }
+
+    // Gaps between consecutive GPS/FLP fixes
+    for i in 1..gps_flp.len() {
+        let dt_ms = gps_flp[i].unix_time_ms - gps_flp[i - 1].unix_time_ms;
+        if dt_ms as f64 / 1000.0 > gap_threshold_s {
+            gaps.push((gps_flp[i - 1].unix_time_ms, gps_flp[i].unix_time_ms));
+        }
+    }
+
+    // Gap after last GPS/FLP fix
+    if t_end - gps_flp[gps_flp.len() - 1].unix_time_ms > (gap_threshold_s * 1000.0) as i64 {
+        gaps.push((gps_flp[gps_flp.len() - 1].unix_time_ms, t_end));
+    }
+
+    let total_gap_s: f64 = gaps.iter().map(|(s, e)| (e - s) as f64 / 1000.0).sum();
+    println!(
+        "\n  GPS/FLP gaps (>{gap_threshold_s}s): {} gaps, {total_gap_s:.0}s total ({:.1}% of session)",
+        gaps.len(),
+        total_gap_s / total_s * 100.0,
+    );
+
+    // Classify gaps by duration
+    let mut gap_durations: Vec<f64> = gaps.iter().map(|(s, e)| (e - s) as f64 / 1000.0).collect();
+    gap_durations.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+    if !gap_durations.is_empty() {
+        let buckets = [(5.0, 10.0), (10.0, 30.0), (30.0, 60.0), (60.0, 300.0), (300.0, f64::MAX)];
+        let labels = ["5-10s", "10-30s", "30-60s", "1-5min", "5min+"];
+        print!("  Gap duration distribution: ");
+        for (i, &(lo, hi)) in buckets.iter().enumerate() {
+            let count = gap_durations.iter().filter(|&&d| d >= lo && d < hi).count();
+            if count > 0 {
+                print!("{}={} ", labels[i], count);
+            }
+        }
+        println!();
+
+        // Show longest gaps
+        let top_n = gap_durations.len().min(5);
+        println!("  Longest gaps:");
+        for d in gap_durations.iter().rev().take(top_n) {
+            println!("    {d:.1}s");
+        }
+    }
+
+    // NLP fixes during GPS/FLP gaps vs outside
+    let mut nlp_in_gap = 0usize;
+    let mut nlp_outside_gap = 0usize;
+    for nlp in &nlp_only {
+        let in_gap = gaps
+            .iter()
+            .any(|(s, e)| nlp.unix_time_ms >= *s && nlp.unix_time_ms <= *e);
+        if in_gap {
+            nlp_in_gap += 1;
+        } else {
+            nlp_outside_gap += 1;
+        }
+    }
+
+    println!("\n  NLP fix timing:");
+    println!("    During GPS/FLP gaps: {nlp_in_gap}");
+    println!("    Outside gaps (redundant): {nlp_outside_gap}");
+
+    if nlp_in_gap > 0 {
+        // Accuracy of NLP during gaps
+        let mut gap_accs: Vec<f64> = nlp_only
+            .iter()
+            .filter(|f| {
+                gaps.iter()
+                    .any(|(s, e)| f.unix_time_ms >= *s && f.unix_time_ms <= *e)
+            })
+            .filter_map(|f| f.accuracy_m)
+            .collect();
+        gap_accs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        if !gap_accs.is_empty() {
+            let median = gap_accs[gap_accs.len() / 2];
+            let min = gap_accs[0];
+            let max = gap_accs[gap_accs.len() - 1];
+            println!("    NLP accuracy during gaps: min={min:.0}m, median={median:.0}m, max={max:.0}m");
+        }
+    }
+
+    // Show a few example gaps with NLP coverage
+    println!("\n  Example gaps with NLP coverage (up to 10):");
+    let mut shown = 0;
+    for (gs, ge) in &gaps {
+        let gap_nlps: Vec<&&FixRecord> = nlp_only
+            .iter()
+            .filter(|f| f.unix_time_ms >= *gs && f.unix_time_ms <= *ge)
+            .collect();
+        if !gap_nlps.is_empty() && shown < 10 {
+            let gap_dur = (*ge - *gs) as f64 / 1000.0;
+            let offset_s = (*gs - t_start) as f64 / 1000.0;
+            let accs: Vec<String> = gap_nlps
+                .iter()
+                .take(3)
+                .map(|f| format!("{:.0}m", f.accuracy_m.unwrap_or(-1.0)))
+                .collect();
+            println!(
+                "    t+{:.0}s: gap={gap_dur:.1}s, {} NLP fixes (acc: {}{})",
+                offset_s,
+                gap_nlps.len(),
+                accs.join(", "),
+                if gap_nlps.len() > 3 { ", ..." } else { "" },
+            );
+            shown += 1;
         }
     }
 }
