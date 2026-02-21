@@ -2,10 +2,12 @@
 name = "trajix"
 version = "0.1.0"
 edition = "2024"
-description = "Parser library for Android GNSS Logger CSV format"
+description = "GNSS/positioning data parser and analysis library"
 license = "MPL-2.0"
 keywords = ["gnss", "gps", "positioning", "location"]
 categories = ["parser-implementations", "science::geo"]
+repository = "https://github.com/sksat/trajix"
+readme = "../../README.md"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
