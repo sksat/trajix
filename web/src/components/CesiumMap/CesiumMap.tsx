@@ -69,6 +69,10 @@ export function CesiumMap({
     // This prevents near-plane clipping when the camera is close to terrain.
     viewer.scene.logarithmicDepthBuffer = true;
 
+    // Depth-test entities (polylines, points, etc.) against terrain so they
+    // are hidden when behind mountains instead of rendering through them.
+    viewer.scene.globe.depthTestAgainstTerrain = true;
+
     viewerRef.current = viewer;
     onViewerReady?.(viewer);
 
@@ -241,7 +245,6 @@ function setupAnimationMarker(
   clock.shouldAnimate = false; // PlaybackControls will start it
 
   // Add marker entity with terrain-adjusted altitude.
-  // disableDepthTestDistance keeps it visible through terrain at grazing angles.
   const marker = viewer.entities.add({
     position: sampledPosition,
     point: {
@@ -249,7 +252,6 @@ function setupAnimationMarker(
       color: Cesium.Color.fromCssColorString("#8ab4f8"),
       outlineColor: Cesium.Color.WHITE,
       outlineWidth: 2,
-      disableDepthTestDistance: Number.POSITIVE_INFINITY,
     },
     viewFrom: new Cesium.Cartesian3(0, -200, 300),
   });
@@ -363,7 +365,6 @@ function addNlpPoints(
         pixelSize: isGapFallback ? 6 : 4,
         color: pointColor,
         outlineWidth: 0,
-        disableDepthTestDistance: Number.POSITIVE_INFINITY,
       },
     });
 
