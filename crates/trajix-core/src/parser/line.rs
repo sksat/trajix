@@ -21,6 +21,27 @@ pub enum Record {
     Skipped,
 }
 
+impl Record {
+    /// Extract the Unix timestamp in milliseconds from this record.
+    ///
+    /// Returns `Some(ms)` for all record types that carry a timestamp.
+    /// For Status records, returns the value only if present (it may be empty).
+    /// Returns `None` for `Skipped` records and Status records with empty timestamps.
+    pub fn timestamp_ms(&self) -> Option<i64> {
+        match self {
+            Record::Fix(r) => Some(r.unix_time_ms),
+            Record::Raw(r) => Some(r.utc_time_ms),
+            Record::Status(r) => r.unix_time_ms,
+            Record::UncalAccel(r)
+            | Record::UncalGyro(r)
+            | Record::UncalMag(r) => Some(r.utc_time_ms),
+            Record::OrientationDeg(r) => Some(r.utc_time_ms),
+            Record::GameRotationVector(r) => Some(r.utc_time_ms),
+            Record::Skipped => None,
+        }
+    }
+}
+
 /// Record types that are recognized but skipped (no parser needed).
 const SKIPPED_PREFIXES: &[&str] = &[
     "Nav,", "Agc,", "Accel,", "Gyro,", "Mag,", "Pressure,",
