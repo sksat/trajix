@@ -1,3 +1,4 @@
+pub mod dead_reckoning;
 pub mod downsample;
 pub mod error;
 pub mod parser;
