@@ -1,0 +1,33 @@
+# 
+# Header Description:
+# 
+# Version: v3.1.1.2 Platform: 15 Manufacturer: SHARP Model: SH-M26 GNSS Hardware Model Name: qcom;MPSS.DE.3.1.1-00545.5-NETRANI_GENALL_PACK-2.117168.3.119905.4;
+# 
+# Raw,utcTimeMillis,TimeNanos,LeapSecond,TimeUncertaintyNanos,FullBiasNanos,BiasNanos,BiasUncertaintyNanos,DriftNanosPerSecond,DriftUncertaintyNanosPerSecond,HardwareClockDiscontinuityCount,Svid,TimeOffsetNanos,State,ReceivedSvTimeNanos,ReceivedSvTimeUncertaintyNanos,Cn0DbHz,PseudorangeRateMetersPerSecond,PseudorangeRateUncertaintyMetersPerSecond,AccumulatedDeltaRangeState,AccumulatedDeltaRangeMeters,AccumulatedDeltaRangeUncertaintyMeters,CarrierFrequencyHz,CarrierCycles,CarrierPhase,CarrierPhaseUncertainty,MultipathIndicator,SnrInDb,ConstellationType,AgcDb,BasebandCn0DbHz,FullInterSignalBiasNanos,FullInterSignalBiasUncertaintyNanos,SatelliteInterSignalBiasNanos,SatelliteInterSignalBiasUncertaintyNanos,CodeType,ChipsetElapsedRealtimeNanos,IsFullTracking,SvPositionEcefXMeters,SvPositionEcefYMeters,SvPositionEcefZMeters,SvVelocityEcefXMetersPerSecond,SvVelocityEcefYMetersPerSecond,SvVelocityEcefZMetersPerSecond,SvClockBiasMeters,SvClockDriftMetersPerSecond,KlobucharAlpha0,KlobucharAlpha1,KlobucharAlpha2,KlobucharAlpha3,KlobucharBeta0,KlobucharBeta1,KlobucharBeta2,KlobucharBeta3
+# 
+# UncalAccel,utcTimeMillis,elapsedRealtimeNanos,UncalAccelXMps2,UncalAccelYMps2,UncalAccelZMps2,BiasXMps2,BiasYMps2,BiasZMps2,CalibrationAccuracy
+# 
+# Accel,utcTimeMillis,elapsedRealtimeNanos,AccelXMps2,AccelYMps2,AccelZMps2,CalibrationAccuracy
+# 
+# UncalGyro,utcTimeMillis,elapsedRealtimeNanos,UncalGyroXRadPerSec,UncalGyroYRadPerSec,UncalGyroZRadPerSec,DriftXRadPerSec,DriftYRadPerSec,DriftZRadPerSec,CalibrationAccuracy
+# 
+# Gyro,utcTimeMillis,elapsedRealtimeNanos,GyroXRadPerSec,GyroYRadPerSec,GyroZRadPerSec,CalibrationAccuracy
+# 
+# UncalMag,utcTimeMillis,elapsedRealtimeNanos,UncalMagXMicroT,UncalMagYMicroT,UncalMagZMicroT,BiasXMicroT,BiasYMicroT,BiasZMicroT,CalibrationAccuracy
+# 
+# Mag,utcTimeMillis,elapsedRealtimeNanos,MagXMicroT,MagYMicroT,MagZMicroT,CalibrationAccuracy
+# 
+# Pressure,utcTimeMillis,elapsedRealtimeNanos,PressureHpa,CalibrationAccuracy
+# 
+# OrientationDeg,utcTimeMillis,elapsedRealtimeNanos,yawDeg,rollDeg,pitchDeg,CalibrationAccuracy
+# 
+# Fix,Provider,LatitudeDegrees,LongitudeDegrees,AltitudeMeters,SpeedMps,AccuracyMeters,BearingDegrees,UnixTimeMillis,SpeedAccuracyMps,BearingAccuracyDegrees,elapsedRealtimeNanos,VerticalAccuracyMeters,MockLocation,NumberOfUsedSignals,VerticalSpeedAccuracyMps,SolutionType
+# 
+# Nav,Svid,Type,Status,MessageId,Sub-messageId,Data(Bytes)
+# 
+# Status,UnixTimeMillis,SignalCount,SignalIndex,ConstellationType,Svid,CarrierFrequencyHz,Cn0DbHz,AzimuthDegrees,ElevationDegrees,UsedInFix,HasAlmanacData,HasEphemerisData,BasebandCn0DbHz
+# 
+# Agc,utcTimeMillis,TimeNanos,LeapSecond,TimeUncertaintyNanos,FullBiasNanos,BiasNanos,BiasUncertaintyNanos,DriftNanosPerSecond,DriftUncertaintyNanosPerSecond,HardwareClockDiscontinuityCount,AgcDb,CarrierFrequencyHz,ConstellationType
+# 
+# GameRotationVector,utcTimeMillis,elapsedRealtimeNanos,x,y,z,w
+# 

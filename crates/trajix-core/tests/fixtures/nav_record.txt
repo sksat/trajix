@@ -1,0 +1,1 @@
+# Nav,Svid,Type,Status,MessageId,Sub-messageId,Data(Bytes)
