@@ -1,6 +1,10 @@
 use serde::{Deserialize, Serialize};
 
+use crate::error::ParseError;
 use crate::types::FixProvider;
+
+/// Expected number of CSV fields in a Fix record (including the "Fix" prefix).
+const FIX_FIELD_COUNT: usize = 17;
 
 /// A position fix record from GNSS Logger.
 ///
@@ -25,4 +29,221 @@ pub struct FixRecord {
     pub num_used_signals: Option<u32>,
     pub vertical_speed_accuracy_mps: Option<f64>,
     pub solution_type: Option<String>,
+}
+
+impl FixRecord {
+    /// Parse a Fix record from a CSV line.
+    ///
+    /// The line should start with "Fix," and contain 17 comma-separated fields.
+    pub fn parse(line: &str) -> Result<Self, ParseError> {
+        let fields: Vec<&str> = line.split(',').collect();
+        if fields.len() != FIX_FIELD_COUNT {
+            return Err(ParseError::FieldCount {
+                record_type: "Fix",
+                expected: FIX_FIELD_COUNT,
+                actual: fields.len(),
+            });
+        }
+
+        let provider = FixProvider::from_str(fields[1])
+            .ok_or_else(|| ParseError::UnknownProvider(fields[1].to_string()))?;
+
+        Ok(FixRecord {
+            provider,
+            latitude_deg: parse_f64(fields[2], "LatitudeDegrees")?,
+            longitude_deg: parse_f64(fields[3], "LongitudeDegrees")?,
+            altitude_m: parse_optional_f64(fields[4]),
+            speed_mps: parse_optional_f64(fields[5]),
+            accuracy_m: parse_optional_f64(fields[6]),
+            bearing_deg: parse_optional_f64(fields[7]),
+            unix_time_ms: parse_i64(fields[8], "UnixTimeMillis")?,
+            speed_accuracy_mps: parse_optional_f64(fields[9]),
+            bearing_accuracy_deg: parse_optional_f64(fields[10]),
+            elapsed_realtime_ns: parse_optional_i64(fields[11]),
+            vertical_accuracy_m: parse_optional_f64(fields[12]),
+            mock_location: fields[13] == "1",
+            num_used_signals: parse_optional_u32(fields[14]),
+            vertical_speed_accuracy_mps: parse_optional_f64(fields[15]),
+            solution_type: if fields[16].is_empty() {
+                None
+            } else {
+                Some(fields[16].to_string())
+            },
+        })
+    }
+}
+
+fn parse_f64(s: &str, field: &'static str) -> Result<f64, ParseError> {
+    s.parse::<f64>().map_err(|e| ParseError::FieldParse {
+        field,
+        source: Box::new(e),
+    })
+}
+
+fn parse_i64(s: &str, field: &'static str) -> Result<i64, ParseError> {
+    s.parse::<i64>().map_err(|e| ParseError::FieldParse {
+        field,
+        source: Box::new(e),
+    })
+}
+
+fn parse_optional_f64(s: &str) -> Option<f64> {
+    if s.is_empty() { None } else { s.parse().ok() }
+}
+
+fn parse_optional_i64(s: &str) -> Option<i64> {
+    if s.is_empty() { None } else { s.parse().ok() }
+}
+
+fn parse_optional_u32(s: &str) -> Option<u32> {
+    if s.is_empty() { None } else { s.parse().ok() }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn load_fixture(name: &str) -> String {
+        let path = format!(
+            "{}/tests/fixtures/{name}",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        std::fs::read_to_string(path).unwrap()
+    }
+
+    #[test]
+    fn parse_normal_gps_fix() {
+        let content = load_fixture("fix_normal_gps.txt");
+        for line in content.lines().filter(|l| !l.is_empty()) {
+            let fix = FixRecord::parse(line).unwrap();
+            assert_eq!(fix.provider, FixProvider::Gps);
+            assert!((fix.latitude_deg - 36.212).abs() < 0.001);
+            assert!((fix.longitude_deg - 140.097).abs() < 0.001);
+            assert!(fix.altitude_m.is_some());
+            assert!(fix.accuracy_m.is_some());
+            assert!(!fix.mock_location);
+        }
+    }
+
+    #[test]
+    fn parse_normal_gps_fix_field_values() {
+        let content = load_fixture("fix_normal_gps.txt");
+        let line = content.lines().next().unwrap();
+        let fix = FixRecord::parse(line).unwrap();
+
+        assert_eq!(fix.provider, FixProvider::Gps);
+        assert!((fix.latitude_deg - 36.2120566600).abs() < 1e-9);
+        assert!((fix.longitude_deg - 140.0965061400).abs() < 1e-9);
+        assert!((fix.altitude_m.unwrap() - 281.32696533203125).abs() < 1e-6);
+        assert!((fix.speed_mps.unwrap() - 0.0).abs() < 1e-9);
+        assert!((fix.accuracy_m.unwrap() - 3.7900925).abs() < 1e-6);
+        assert!(fix.bearing_deg.is_none()); // empty in this record
+        assert_eq!(fix.unix_time_ms, 1771641748000);
+        assert!((fix.speed_accuracy_mps.unwrap() - 0.07064216).abs() < 1e-6);
+        assert!(fix.bearing_accuracy_deg.is_none()); // empty
+        assert_eq!(fix.elapsed_realtime_ns.unwrap(), 2091905471128467);
+        assert!((fix.vertical_accuracy_m.unwrap() - 3.659059).abs() < 1e-5);
+        assert!(!fix.mock_location);
+        assert!(fix.num_used_signals.is_none());
+        assert!(fix.vertical_speed_accuracy_mps.is_none());
+        assert!(fix.solution_type.is_none());
+    }
+
+    #[test]
+    fn parse_gps_fix_with_bearing() {
+        let content = load_fixture("fix_normal_gps.txt");
+        // Third line has bearing
+        let line = content.lines().nth(2).unwrap();
+        let fix = FixRecord::parse(line).unwrap();
+
+        assert!((fix.bearing_deg.unwrap() - 265.4).abs() < 0.1);
+        assert!((fix.speed_mps.unwrap() - 0.26).abs() < 0.01);
+        assert!(fix.bearing_accuracy_deg.is_some());
+    }
+
+    #[test]
+    fn parse_normal_flp_fix() {
+        let content = load_fixture("fix_normal_flp.txt");
+        for line in content.lines().filter(|l| !l.is_empty()) {
+            let fix = FixRecord::parse(line).unwrap();
+            assert_eq!(fix.provider, FixProvider::Flp);
+            assert!(fix.latitude_deg > 36.0);
+            assert!(fix.longitude_deg > 140.0);
+        }
+    }
+
+    #[test]
+    fn parse_nlp_empty_fields() {
+        let content = load_fixture("fix_nlp_empty_fields.txt");
+        for line in content.lines().filter(|l| !l.is_empty()) {
+            let fix = FixRecord::parse(line).unwrap();
+            assert_eq!(fix.provider, FixProvider::Nlp);
+            assert!(fix.altitude_m.is_none(), "NLP should have empty altitude");
+            assert!(fix.speed_mps.is_none(), "NLP should have empty speed");
+            assert!(fix.bearing_deg.is_none());
+            assert!(fix.speed_accuracy_mps.is_none());
+            assert!(fix.bearing_accuracy_deg.is_none());
+        }
+    }
+
+    #[test]
+    fn parse_nlp_accuracy_400() {
+        let content = load_fixture("fix_nlp_accuracy_400.txt");
+        for line in content.lines().filter(|l| !l.is_empty()) {
+            let fix = FixRecord::parse(line).unwrap();
+            assert_eq!(fix.provider, FixProvider::Nlp);
+            assert!((fix.accuracy_m.unwrap() - 400.0).abs() < 0.1);
+        }
+    }
+
+    #[test]
+    fn parse_high_speed_fix() {
+        let content = load_fixture("fix_high_speed.txt");
+        for line in content.lines().filter(|l| !l.is_empty()) {
+            let fix = FixRecord::parse(line).unwrap();
+            assert_eq!(fix.provider, FixProvider::Gps);
+            assert!(fix.speed_mps.unwrap() > 10.0);
+            assert!(fix.bearing_deg.is_some());
+        }
+    }
+
+    #[test]
+    fn parse_mid_file_fix() {
+        let content = load_fixture("fix_mid_file.txt");
+        for line in content.lines().filter(|l| !l.is_empty()) {
+            let fix = FixRecord::parse(line).unwrap();
+            // Mid-file location is different from start
+            assert!(fix.latitude_deg > 36.0);
+            assert!(fix.unix_time_ms > 1771641748000);
+        }
+    }
+
+    #[test]
+    fn parse_fix_wrong_field_count() {
+        let result = FixRecord::parse("Fix,GPS,36.0,140.0");
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            ParseError::FieldCount {
+                record_type,
+                expected,
+                actual,
+            } => {
+                assert_eq!(record_type, "Fix");
+                assert_eq!(expected, 17);
+                assert_eq!(actual, 4);
+            }
+            _ => panic!("expected FieldCount error"),
+        }
+    }
+
+    #[test]
+    fn parse_fix_unknown_provider() {
+        let line = "Fix,UNKNOWN,36.0,140.0,100.0,0.0,5.0,,1234567890,,,123456789,1.0,0,,,";
+        let result = FixRecord::parse(line);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            ParseError::UnknownProvider(p) => assert_eq!(p, "UNKNOWN"),
+            _ => panic!("expected UnknownProvider error"),
+        }
+    }
 }
