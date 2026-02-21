@@ -4,6 +4,7 @@ import wasm from "vite-plugin-wasm";
 import cesium from "vite-plugin-cesium";
 
 export default defineConfig({
+  base: "/trajix/",
   plugins: [react(), wasm(), cesium()],
   worker: {
     plugins: () => [wasm()],
