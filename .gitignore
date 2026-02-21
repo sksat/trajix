@@ -1,0 +1,22 @@
+# Rust
+/target/
+Cargo.lock
+
+# GNSS log data (too large for git)
+*.txt
+!crates/trajix-core/tests/fixtures/*.txt
+
+# Node
+node_modules/
+dist/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+
+# WASM build
+/pkg/
