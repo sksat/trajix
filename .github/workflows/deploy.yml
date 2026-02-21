@@ -25,6 +25,8 @@ jobs:
           toolchain: stable
           targets: wasm32-unknown-unknown
 
+      - uses: Swatinem/rust-cache@v2.8.2
+
       - name: Install wasm-pack
         run: curl -sSf https://rustwasm.github.io/wasm-pack/installer/init.sh | sh
 
@@ -32,6 +34,8 @@ jobs:
         run: wasm-pack build crates/trajix-wasm --target web --out-dir pkg
 
       - uses: pnpm/action-setup@v4.2.0
+        with:
+          version: 10
       - uses: actions/setup-node@v6.2.0
         with:
           node-version: 22
