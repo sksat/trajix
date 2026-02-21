@@ -1,0 +1,11 @@
+[package]
+name = "trajix-cli"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "trajix"
+path = "src/main.rs"
+
+[dependencies]
+trajix-core = { path = "../trajix-core" }

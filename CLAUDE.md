@@ -20,14 +20,27 @@ cargo test parse_nlp_empty_fields
 
 # Run tests for a specific crate
 cargo test -p trajix-core
+
+# CLI: analyze a GNSS log file
+cargo run -p trajix-cli --release -- gnss_log_*.txt
 ```
+
+## CLI for Data Analysis
+
+`trajix-cli` provides the same parsing as the browser pipeline but runs locally on the command line. Use it to:
+- Investigate data quality issues (accuracy distribution, spatial outliers) without browser E2E
+- Validate filtering/processing logic changes with fast feedback
+- Prototype new analysis before adding to the web UI
+
+When developing new data processing features (filtering, aggregation, etc.), prefer testing via CLI first to avoid unnecessarily E2E-heavy workflows. Add analysis subcommands to the CLI as needed.
 
 ## Architecture
 
-**Rust workspace** with planned crates:
-- `crates/trajix-core/` — Parser library (the active crate). Parses GNSS Logger CSV format into typed records. Will compile to WASM.
-- `crates/trajix-wasm/` — WASM bindings (planned). Exposes streaming `feed(chunk)` API for browser use.
-- `web/` — React + TypeScript frontend (planned). Uses DuckDB-wasm for SQL queries over parsed data.
+**Rust workspace** crates:
+- `crates/trajix-core/` — Parser library. Parses GNSS Logger CSV format into typed records. Compiles to WASM.
+- `crates/trajix-wasm/` — WASM bindings. Exposes streaming `feed(chunk)` API for browser use.
+- `crates/trajix-cli/` — CLI tool for data analysis without browser. Useful for investigating data quality issues on real log files.
+- `web/` — React + TypeScript frontend (Vite + CesiumJS).
 
 **Data pipeline**: File D&D → Web Worker → WASM parser → Arrow RecordBatch → DuckDB-wasm → React UI
 
