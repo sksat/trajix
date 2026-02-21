@@ -168,6 +168,28 @@ export function PlaybackControls({ viewer }: PlaybackControlsProps) {
     let range = 360;
     let initialized = false;
 
+    // --- Auto-heading toward travel direction ---
+    // Adaptive EMA on bearing: short window on turns, long on straights.
+    let prevSample: { lon: number; lat: number } | null = null;
+    const POS_SAMPLE_RAD = 0.00005; // ~5m min distance between samples
+    // Exponentially smoothed bearing (sin/cos for circular averaging)
+    let bearingSin = 0;
+    let bearingCos = 0;
+    let travelBearing = 0;
+    let hasBearing = false;
+    // Adaptive alpha: responsive on turns, stable on straights
+    const ALPHA_MIN = 0.05; // ~20 samples ≈ 100m effective window
+    const ALPHA_MAX = 0.4; // ~2.5 samples ≈ 12m effective window
+    const TURN_THRESHOLD = Math.PI / 4; // 45° → full responsiveness
+    // Auto-heading lerp speed (per frame ~60fps), tau ~4s
+    const HEADING_LERP = 0.015;
+    // User's preferred offset from travel direction (updated by drag)
+    let headingOffset = Cesium.Math.toRadians(10);
+    let lastSetHeading = 0;
+    // Pitch range: no auto-heading near top-down, full at moderate angles
+    const PITCH_FULL = Cesium.Math.toRadians(-60);
+    const PITCH_ZERO = Cesium.Math.toRadians(-80);
+
     const onPreRender = () => {
       const pos = marker.position?.getValue(viewer.clock.currentTime);
       if (!pos) return;
@@ -184,6 +206,8 @@ export function PlaybackControls({ viewer }: PlaybackControlsProps) {
         // Snap on large jumps (seek / track restart)
         if (Math.abs(dLon) > SNAP_RAD || Math.abs(dLat) > SNAP_RAD) {
           smoothed = target.clone();
+          prevSample = null;
+          hasBearing = false;
         } else {
           smoothed.longitude += dLon * H_LERP;
           smoothed.latitude += dLat * H_LERP;
@@ -191,9 +215,58 @@ export function PlaybackControls({ viewer }: PlaybackControlsProps) {
         }
       }
 
+      // Sample smoothed position & compute adaptive bearing via EMA
+      const moved =
+        !prevSample ||
+        Math.abs(smoothed.longitude - prevSample.lon) > POS_SAMPLE_RAD ||
+        Math.abs(smoothed.latitude - prevSample.lat) > POS_SAMPLE_RAD;
+      if (moved) {
+        if (prevSample) {
+          const dLon = smoothed.longitude - prevSample.lon;
+          // Instantaneous bearing from previous sample
+          const inst = Math.atan2(
+            Math.sin(dLon) * Math.cos(smoothed.latitude),
+            Math.cos(prevSample.lat) * Math.sin(smoothed.latitude) -
+              Math.sin(prevSample.lat) *
+                Math.cos(smoothed.latitude) *
+                Math.cos(dLon),
+          );
+          if (!hasBearing) {
+            bearingSin = Math.sin(inst);
+            bearingCos = Math.cos(inst);
+            hasBearing = true;
+          } else {
+            // Adaptive alpha: large on sharp turns, small on straights
+            const cur = Math.atan2(bearingSin, bearingCos);
+            const delta = Math.abs(
+              Math.atan2(Math.sin(inst - cur), Math.cos(inst - cur)),
+            );
+            const alpha =
+              ALPHA_MIN +
+              (ALPHA_MAX - ALPHA_MIN) * Math.min(1, delta / TURN_THRESHOLD);
+            bearingSin = bearingSin * (1 - alpha) + Math.sin(inst) * alpha;
+            bearingCos = bearingCos * (1 - alpha) + Math.cos(inst) * alpha;
+          }
+          travelBearing = Math.atan2(bearingSin, bearingCos);
+        }
+        prevSample = { lon: smoothed.longitude, lat: smoothed.latitude };
+      }
+
       // Read user-adjusted HPR before overwriting (preserves drag/zoom)
       if (initialized) {
-        heading = viewer.camera.heading;
+        const cameraHeading = viewer.camera.heading;
+        // Detect user heading drag → update offset from travel direction
+        const userDelta = Math.atan2(
+          Math.sin(cameraHeading - lastSetHeading),
+          Math.cos(cameraHeading - lastSetHeading),
+        );
+        if (Math.abs(userDelta) > 0.003) {
+          headingOffset = Math.atan2(
+            Math.sin(headingOffset + userDelta),
+            Math.cos(headingOffset + userDelta),
+          );
+        }
+        heading = cameraHeading;
         pitch = viewer.camera.pitch;
         const camPos = viewer.camera.positionWC;
         const center = Cesium.Cartesian3.fromRadians(
@@ -204,16 +277,56 @@ export function PlaybackControls({ viewer }: PlaybackControlsProps) {
         range = Cesium.Cartesian3.distance(camPos, center);
       }
 
+      // Auto-rotate heading toward travel direction (when not top-down)
+      if (hasBearing && initialized) {
+        // Pitch-dependent blend: 0 near top-down, 1 at moderate pitch
+        const t = Math.max(
+          0,
+          Math.min(1, (pitch - PITCH_ZERO) / (PITCH_FULL - PITCH_ZERO)),
+        );
+        const desired = travelBearing + headingOffset;
+        // Shortest angle difference via atan2
+        const diff = Math.atan2(
+          Math.sin(desired - heading),
+          Math.cos(desired - heading),
+        );
+        heading += diff * HEADING_LERP * t;
+      }
+
+      // Prevent camera from clipping into terrain: if camera would be
+      // below terrain + margin, pull pitch toward nadir (more top-down).
       const center = Cesium.Cartesian3.fromRadians(
         smoothed.longitude,
         smoothed.latitude,
         smoothed.height,
       );
+      const camOffset = new Cesium.HeadingPitchRange(heading, pitch, range);
+      // Compute would-be camera position
+      viewer.camera.lookAt(center, camOffset);
+      const camCarto = Cesium.Cartographic.fromCartesian(
+        viewer.camera.positionWC,
+      );
+      if (camCarto) {
+        const terrainH = viewer.scene.globe.getHeight(camCarto);
+        if (terrainH !== undefined) {
+          const MIN_ALT = 50; // minimum camera altitude above terrain (m)
+          const camAlt = camCarto.height - terrainH;
+          if (camAlt < MIN_ALT) {
+            // Pull pitch toward nadir to lift camera above terrain
+            const PITCH_ADJUST = 0.03; // per-frame adjustment speed
+            const deficit = (MIN_ALT - camAlt) / MIN_ALT; // 0..1+
+            pitch = pitch - PITCH_ADJUST * Math.min(1, deficit);
+            // Clamp pitch to not go past straight-down
+            pitch = Math.max(pitch, Cesium.Math.toRadians(-89));
+          }
+        }
+      }
 
       viewer.camera.lookAt(
         center,
         new Cesium.HeadingPitchRange(heading, pitch, range),
       );
+      lastSetHeading = heading;
       initialized = true;
     };
 
