@@ -1,0 +1,125 @@
+.app {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  font-family: system-ui, -apple-system, sans-serif;
+  color: #e0e0e0;
+  background: #1a1a2e;
+}
+
+.app-header {
+  padding: 1rem 2rem;
+  border-bottom: 1px solid #2a2a4a;
+}
+
+.app-header h1 {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  color: #8ab4f8;
+}
+
+.app-main {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+}
+
+/* File Loader */
+.file-loader {
+  width: 100%;
+  max-width: 480px;
+}
+
+.drop-zone {
+  border: 2px dashed #3a3a5a;
+  border-radius: 12px;
+  padding: 3rem 2rem;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.drop-zone:hover,
+.drop-zone.drag-over {
+  border-color: #8ab4f8;
+  background: rgba(138, 180, 248, 0.05);
+}
+
+.drop-label {
+  font-size: 1.1rem;
+  margin: 0 0 0.5rem;
+}
+
+.hint {
+  color: #888;
+  font-size: 0.85rem;
+  margin: 0;
+}
+
+/* Progress */
+.progress-container {
+  width: 100%;
+  height: 6px;
+  background: #2a2a4a;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.progress-bar {
+  height: 100%;
+  background: #8ab4f8;
+  transition: width 0.1s ease;
+}
+
+.progress-text {
+  text-align: center;
+  margin-top: 1rem;
+  font-size: 0.9rem;
+  color: #aaa;
+}
+
+/* Error */
+.file-loader.error {
+  border: 2px dashed #e57373;
+  border-radius: 12px;
+  padding: 2rem;
+  text-align: center;
+  cursor: pointer;
+  color: #e57373;
+}
+
+/* Result Summary */
+.result-summary {
+  max-width: 600px;
+  width: 100%;
+}
+
+.result-summary h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1.2rem;
+}
+
+.device-info {
+  color: #888;
+  margin: 0 0 1.5rem;
+}
+
+.result-summary table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: 1rem;
+}
+
+.result-summary td {
+  padding: 0.4rem 0.8rem;
+  border-bottom: 1px solid #2a2a4a;
+}
+
+.result-summary td:last-child {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
