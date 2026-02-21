@@ -1,14 +1,13 @@
 /**
- * Altitude spike filter using running median.
+ * Altitude processing: spike removal + smoothing.
  *
  * GPS altitude has inherent vertical noise (2-3x worse than horizontal).
  * Additionally, GPS and FLP providers interleave at sub-second intervals
  * with systematically different altitudes (~1.6m median, up to ~80m worst case).
- * This creates ugly vertical pillars in 3D visualization.
  *
- * Strategy: compute running median of surrounding points, replace any point
- * that deviates more than a threshold from its local median. This naturally
- * handles both provider interleaving jitter and genuine altitude spikes.
+ * Two-pass pipeline:
+ * 1. Spike filter (running median): removes extreme outliers (>30m)
+ * 2. Smoothing (time-aware moving average): reduces residual jitter
  */
 
 import type { FixRecord } from "../types/gnss";
@@ -87,4 +86,59 @@ export function filterAltitudeSpikes(
     filteredHeights: filtered,
     stats: { pointsReplaced, maxDeviation },
   };
+}
+
+// ────────────────────────────────────────────
+// Altitude smoothing (time-aware moving average)
+// ────────────────────────────────────────────
+
+export interface SmoothOptions {
+  /** Half-window size (points). Window = 2*halfWindow+1. Default: 5 */
+  halfWindow?: number;
+  /** Time gap threshold (ms). Don't average across gaps larger than this. Default: 3000 */
+  gapThresholdMs?: number;
+}
+
+/**
+ * Smooth altitudes using a time-aware moving average.
+ *
+ * For each point, averages the surrounding ±halfWindow points,
+ * but only includes neighbors that are within gapThresholdMs of
+ * the current point (to avoid averaging across time gaps).
+ *
+ * This reduces GPS vertical jitter (~2-10m) while preserving the
+ * general altitude profile (climbs, descents).
+ */
+export function smoothAltitudes(
+  fixes: FixRecord[],
+  heights: number[],
+  options?: SmoothOptions,
+): number[] {
+  const halfWin = options?.halfWindow ?? 5;
+  const gapMs = options?.gapThresholdMs ?? 3000;
+
+  const n = heights.length;
+  if (n <= 2) return [...heights];
+
+  const smoothed = new Array<number>(n);
+
+  for (let i = 0; i < n; i++) {
+    const tCenter = fixes[i]!.unix_time_ms;
+    let sum = 0;
+    let count = 0;
+
+    const lo = Math.max(0, i - halfWin);
+    const hi = Math.min(n - 1, i + halfWin);
+
+    for (let j = lo; j <= hi; j++) {
+      if (Math.abs(fixes[j]!.unix_time_ms - tCenter) <= gapMs) {
+        sum += heights[j]!;
+        count++;
+      }
+    }
+
+    smoothed[i] = count > 0 ? sum / count : heights[i]!;
+  }
+
+  return smoothed;
 }

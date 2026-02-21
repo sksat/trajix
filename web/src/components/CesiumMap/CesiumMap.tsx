@@ -5,7 +5,7 @@ import type { ProcessingResult, FixQuality } from "../../types/gnss";
 import type { FixRecord } from "../../types/gnss";
 import { accuracyToColor } from "../../utils/color";
 import { createGsiTerrainProvider } from "../../utils/gsiTerrain";
-import { filterAltitudeSpikes } from "../../utils/altitude";
+import { filterAltitudeSpikes, smoothAltitudes } from "../../utils/altitude";
 import "./CesiumMap.css";
 
 // Cesium ion token from env (optional — for PLATEAU 3D buildings)
@@ -106,12 +106,15 @@ export function CesiumMap({
         );
       }
 
+      // Smooth altitude jitter (GPS vertical noise ~2-10m)
+      const smoothedHeights = smoothAltitudes(primaryFixes, filteredHeights);
+
       viewer.entities.removeAll();
 
-      addColoredTrack(viewer, primaryFixes, filteredHeights);
+      addColoredTrack(viewer, primaryFixes, smoothedHeights);
 
       if (primaryFixes.length >= 2) {
-        setupAnimationMarker(viewer, primaryFixes, filteredHeights);
+        setupAnimationMarker(viewer, primaryFixes, smoothedHeights);
       }
 
       // Optional NLP layer

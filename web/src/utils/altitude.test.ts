@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { filterAltitudeSpikes } from "./altitude";
+import { filterAltitudeSpikes, smoothAltitudes } from "./altitude";
 import type { FixRecord } from "../types/gnss";
 
 // Helper to create minimal FixRecord for altitude tests
@@ -198,5 +198,127 @@ describe("filterAltitudeSpikes", () => {
     // Non-spike points should be unchanged
     expect(filteredHeights[0]).toBeCloseTo(200, 0);
     expect(filteredHeights[50]).toBeCloseTo(200 + 350, 0);
+  });
+});
+
+// ────────────────────────────────────────────
+// smoothAltitudes — time-aware moving average
+// ────────────────────────────────────────────
+
+describe("smoothAltitudes", () => {
+  it("returns empty array for empty input", () => {
+    expect(smoothAltitudes([], [])).toEqual([]);
+  });
+
+  it("returns single point unchanged", () => {
+    const { fixes, heights } = makeTrack([100]);
+    expect(smoothAltitudes(fixes, heights)).toEqual([100]);
+  });
+
+  it("returns two points unchanged", () => {
+    const { fixes, heights } = makeTrack([100, 200]);
+    expect(smoothAltitudes(fixes, heights)).toEqual([100, 200]);
+  });
+
+  it("smooths constant altitude to same value", () => {
+    const { fixes, heights } = makeTrack([500, 500, 500, 500, 500]);
+    const result = smoothAltitudes(fixes, heights);
+    expect(result).toEqual([500, 500, 500, 500, 500]);
+  });
+
+  it("reduces jitter in flat track", () => {
+    // Alternating 100/110m — smoothing should bring values closer together
+    const alts = [100, 110, 100, 110, 100, 110, 100, 110, 100, 110, 100];
+    const { fixes, heights } = makeTrack(alts);
+    const result = smoothAltitudes(fixes, heights, { halfWindow: 3 });
+
+    // Center points should be closer to 105 (mean of 100 and 110)
+    for (let i = 3; i < result.length - 3; i++) {
+      expect(Math.abs(result[i]! - 105)).toBeLessThan(3);
+    }
+  });
+
+  it("preserves gradual climb trend", () => {
+    // Linear climb: smoothing a linear function should return the same function
+    const alts = Array.from({ length: 11 }, (_, i) => 100 + i * 10);
+    const { fixes, heights } = makeTrack(alts);
+    const result = smoothAltitudes(fixes, heights, { halfWindow: 3 });
+
+    // Center points should closely match original (linear avg of linear = linear)
+    for (let i = 3; i < result.length - 3; i++) {
+      expect(result[i]).toBeCloseTo(alts[i]!, 1);
+    }
+  });
+
+  it("does not average across time gaps", () => {
+    // Two clusters separated by a 10-second gap (> 3s default threshold)
+    const fixes = [
+      makeFix(0, 100), makeFix(1000, 100), makeFix(2000, 100),
+      // 10-second gap
+      makeFix(12000, 200), makeFix(13000, 200), makeFix(14000, 200),
+    ];
+    const heights = [100, 100, 100, 200, 200, 200];
+
+    const result = smoothAltitudes(fixes, heights, { halfWindow: 3, gapThresholdMs: 3000 });
+
+    // Points in each cluster should stay near their own altitude
+    expect(result[0]).toBeCloseTo(100, 0);
+    expect(result[2]).toBeCloseTo(100, 0);
+    expect(result[3]).toBeCloseTo(200, 0);
+    expect(result[5]).toBeCloseTo(200, 0);
+  });
+
+  it("smooths GPS/FLP interleaving jitter", () => {
+    // Real-world pattern: GPS=800m, FLP=806m alternating at 1Hz
+    const alts = [800, 806, 800, 806, 800, 806, 800, 806, 800, 806, 800];
+    const { fixes, heights } = makeTrack(alts);
+    const result = smoothAltitudes(fixes, heights, { halfWindow: 3 });
+
+    // Should converge toward ~803m in the middle
+    for (let i = 3; i < result.length - 3; i++) {
+      expect(Math.abs(result[i]! - 803)).toBeLessThan(2);
+    }
+  });
+
+  it("does not modify input arrays", () => {
+    const { fixes, heights } = makeTrack([100, 110, 100, 110, 100]);
+    const original = [...heights];
+    smoothAltitudes(fixes, heights);
+    expect(heights).toEqual(original);
+  });
+
+  it("uses custom window size", () => {
+    // Larger window = smoother result
+    const alts = [100, 120, 100, 120, 100, 120, 100, 120, 100, 120, 100];
+    const { fixes, heights } = makeTrack(alts);
+
+    const small = smoothAltitudes(fixes, heights, { halfWindow: 1 });
+    const large = smoothAltitudes(fixes, heights, { halfWindow: 5 });
+
+    // Larger window should produce values closer to the mean (110)
+    const smallDeviation = Math.abs(small[5]! - 110);
+    const largeDeviation = Math.abs(large[5]! - 110);
+    expect(largeDeviation).toBeLessThanOrEqual(smallDeviation);
+  });
+
+  it("realistic: smooths noisy mountain hike altitude", () => {
+    // Base climb 200→900m with ±5m random-like noise
+    const n = 50;
+    const noise = [3, -4, 5, -2, 4, -5, 3, -3, 5, -4, 2, -5, 4, -3, 5, -2, 3, -4, 5, -3,
+                   4, -5, 2, -4, 5, -3, 3, -5, 4, -2, 5, -4, 3, -5, 2, -3, 4, -5, 5, -2,
+                   3, -4, 5, -3, 4, -5, 2, -4, 5, -3];
+    const alts = Array.from({ length: n }, (_, i) => 200 + (700 * i) / n + noise[i]!);
+    const { fixes, heights } = makeTrack(alts);
+    const result = smoothAltitudes(fixes, heights, { halfWindow: 3 });
+
+    // Smoothed values should be closer to the true trend than raw
+    let rawError = 0;
+    let smoothError = 0;
+    for (let i = 3; i < n - 3; i++) {
+      const trueAlt = 200 + (700 * i) / n;
+      rawError += Math.abs(heights[i]! - trueAlt);
+      smoothError += Math.abs(result[i]! - trueAlt);
+    }
+    expect(smoothError).toBeLessThan(rawError);
   });
 });
