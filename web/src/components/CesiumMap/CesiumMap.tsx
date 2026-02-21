@@ -3,9 +3,10 @@ import * as Cesium from "cesium";
 import "cesium/Build/Cesium/Widgets/widgets.css";
 import type { ProcessingResult } from "../../types/gnss";
 import { accuracyToColor } from "../../utils/color";
+import { createGsiTerrainProvider } from "../../utils/gsiTerrain";
 import "./CesiumMap.css";
 
-// Cesium ion token from env (free Community tier)
+// Cesium ion token from env (optional — for PLATEAU 3D buildings)
 const ION_TOKEN = import.meta.env.VITE_CESIUM_ION_TOKEN as string | undefined;
 
 interface CesiumMapProps {
@@ -36,6 +37,7 @@ export function CesiumMap({ result }: CesiumMapProps) {
 
     const viewer = new Cesium.Viewer(containerRef.current, {
       baseLayer: new Cesium.ImageryLayer(gsiProvider),
+      terrainProvider: createGsiTerrainProvider(),
       animation: false,
       timeline: false,
       geocoder: false,
@@ -48,12 +50,8 @@ export function CesiumMap({ result }: CesiumMapProps) {
       infoBox: false,
     });
 
-    // Enable terrain if ion token is available
-    if (ION_TOKEN) {
-      Cesium.CesiumTerrainProvider.fromIonAssetId(1).then((terrain) => {
-        viewer.terrainProvider = terrain;
-      });
-    }
+    // Amplify terrain relief (GSI DEM at this scale benefits from exaggeration)
+    viewer.scene.verticalExaggeration = 2.0;
 
     viewerRef.current = viewer;
 
@@ -70,7 +68,15 @@ export function CesiumMap({ result }: CesiumMapProps) {
 
     viewer.entities.removeAll();
     addColoredTrack(viewer, result.fixes);
-    viewer.zoomTo(viewer.entities);
+
+    // Fly to entities with a tilted camera so terrain relief is visible
+    viewer.flyTo(viewer.entities, {
+      offset: new Cesium.HeadingPitchRange(
+        0,
+        Cesium.Math.toRadians(-45),
+        0, // auto range
+      ),
+    });
 
     // Load PLATEAU 3D buildings if ion token available
     if (ION_TOKEN) {
