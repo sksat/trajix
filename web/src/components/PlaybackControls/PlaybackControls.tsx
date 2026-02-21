@@ -132,17 +132,98 @@ export function PlaybackControls({ viewer }: PlaybackControlsProps) {
 
   const toggleFollow = useCallback(() => {
     if (!viewer) return;
-    const marker = findMarker();
 
     if (isFollowing) {
-      // Unfollow
-      viewer.trackedEntity = undefined;
       setIsFollowing(false);
-    } else if (marker) {
-      // Follow marker
-      viewer.trackedEntity = marker;
+    } else if (findMarker()) {
       setIsFollowing(true);
     }
+  }, [viewer, isFollowing, findMarker]);
+
+  // Smoothed camera follow via preRender listener.
+  // Instead of trackedEntity (which rigidly follows entity position and
+  // transmits GPS altitude jitter to the camera), we lerp toward the
+  // marker's position in Cartographic space with heavy vertical smoothing.
+  useEffect(() => {
+    if (!viewer || !isFollowing) return;
+    const marker = findMarker();
+    if (!marker) return;
+
+    let smoothed: Cesium.Cartographic | null = null;
+
+    // Lerp factors per frame (~60fps).
+    // Horizontal: tau ~0.3s → responsive tracking of lateral movement.
+    // Vertical:   tau ~3s   → heavily dampens altitude jitter.
+    const H_LERP = 0.08;
+    const V_LERP = 0.015;
+    // If the marker jumps further than this (e.g. seek), snap immediately
+    const SNAP_RAD = 0.002; // ~200m in radians at equator
+
+    // Initial camera geometry matching viewFrom(0, -200, 300):
+    //   range ≈ 360m, pitch ≈ -56°, heading = 0 (looking north)
+    // After the first frame, we read the camera's current HPR so that
+    // user drag/scroll adjustments are preserved across frames.
+    let heading = 0;
+    let pitch = Cesium.Math.toRadians(-56);
+    let range = 360;
+    let initialized = false;
+
+    const onPreRender = () => {
+      const pos = marker.position?.getValue(viewer.clock.currentTime);
+      if (!pos) return;
+
+      const target = Cesium.Cartographic.fromCartesian(pos);
+
+      if (!smoothed) {
+        smoothed = target.clone();
+      } else {
+        const dLon = target.longitude - smoothed.longitude;
+        const dLat = target.latitude - smoothed.latitude;
+        const dH = target.height - smoothed.height;
+
+        // Snap on large jumps (seek / track restart)
+        if (Math.abs(dLon) > SNAP_RAD || Math.abs(dLat) > SNAP_RAD) {
+          smoothed = target.clone();
+        } else {
+          smoothed.longitude += dLon * H_LERP;
+          smoothed.latitude += dLat * H_LERP;
+          smoothed.height += dH * V_LERP;
+        }
+      }
+
+      // Read user-adjusted HPR before overwriting (preserves drag/zoom)
+      if (initialized) {
+        heading = viewer.camera.heading;
+        pitch = viewer.camera.pitch;
+        const camPos = viewer.camera.positionWC;
+        const center = Cesium.Cartesian3.fromRadians(
+          smoothed.longitude,
+          smoothed.latitude,
+          smoothed.height,
+        );
+        range = Cesium.Cartesian3.distance(camPos, center);
+      }
+
+      const center = Cesium.Cartesian3.fromRadians(
+        smoothed.longitude,
+        smoothed.latitude,
+        smoothed.height,
+      );
+
+      viewer.camera.lookAt(
+        center,
+        new Cesium.HeadingPitchRange(heading, pitch, range),
+      );
+      initialized = true;
+    };
+
+    viewer.scene.preRender.addEventListener(onPreRender);
+
+    return () => {
+      viewer.scene.preRender.removeEventListener(onPreRender);
+      // Unlock camera so user can freely pan/rotate
+      viewer.camera.lookAtTransform(Cesium.Matrix4.IDENTITY);
+    };
   }, [viewer, isFollowing, findMarker]);
 
   if (!viewer) return null;
