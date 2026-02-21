@@ -40,6 +40,24 @@ impl Record {
             Record::Skipped => None,
         }
     }
+
+    /// Returns the `RecordType` discriminant for this record.
+    ///
+    /// Returns `None` for `Skipped` records (which may represent Nav, Agc, etc.).
+    pub fn record_type(&self) -> Option<crate::types::RecordType> {
+        use crate::types::RecordType;
+        match self {
+            Record::Fix(_) => Some(RecordType::Fix),
+            Record::Status(_) => Some(RecordType::Status),
+            Record::Raw(_) => Some(RecordType::Raw),
+            Record::UncalAccel(_) => Some(RecordType::UncalAccel),
+            Record::UncalGyro(_) => Some(RecordType::UncalGyro),
+            Record::UncalMag(_) => Some(RecordType::UncalMag),
+            Record::OrientationDeg(_) => Some(RecordType::OrientationDeg),
+            Record::GameRotationVector(_) => Some(RecordType::GameRotationVector),
+            Record::Skipped => None,
+        }
+    }
 }
 
 /// Record types that are recognized but skipped (no parser needed).
