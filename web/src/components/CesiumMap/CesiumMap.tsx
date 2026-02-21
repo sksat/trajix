@@ -65,6 +65,10 @@ export function CesiumMap({
       infoBox: false,
     });
 
+    // Ensure logarithmic depth buffer is enabled for close-up terrain viewing.
+    // This prevents near-plane clipping when the camera is close to terrain.
+    viewer.scene.logarithmicDepthBuffer = true;
+
     viewerRef.current = viewer;
     onViewerReady?.(viewer);
 

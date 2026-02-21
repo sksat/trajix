@@ -114,14 +114,15 @@ export function createGsiTerrainProvider(): Cesium.CustomHeightmapTerrainProvide
     credit: new Cesium.Credit(
       '<a href="https://maps.gsi.go.jp/development/ichiran.html">国土地理院</a>',
     ),
-    callback: async (
-      x: number,
-      y: number,
-      level: number,
-    ): Promise<Float32Array> => {
-      // GSI DEM tiles are available at zoom 1–14
+    // CesiumJS renders parent tile when callback returns undefined,
+    // but the type definitions don't include undefined in the return type.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    callback: (async (x: number, y: number, level: number) => {
+      // GSI DEM tiles are available at zoom 1–14.
+      // Returning undefined triggers parent tile fallback in CesiumJS,
+      // so terrain stays visible at close zoom instead of going flat.
       if (level > 14) {
-        return new Float32Array(TOTAL_PIXELS);
+        return undefined;
       }
 
       // Skip tiles outside Japan to avoid 404 noise
@@ -132,7 +133,7 @@ export function createGsiTerrainProvider(): Cesium.CustomHeightmapTerrainProvide
         rect.north < JAPAN_BOUNDS.south ||
         rect.south > JAPAN_BOUNDS.north
       ) {
-        return new Float32Array(TOTAL_PIXELS);
+        return undefined;
       }
 
       // Fetch DEM tile (orthometric heights)
@@ -140,10 +141,10 @@ export function createGsiTerrainProvider(): Cesium.CustomHeightmapTerrainProvide
       let demHeights: Float32Array;
       try {
         const tile = await decodePngTile(demUrl, decodePngValue);
-        if (!tile) return new Float32Array(TOTAL_PIXELS);
+        if (!tile) return undefined; // 404 → parent tile fallback
         demHeights = tile;
       } catch {
-        return new Float32Array(TOTAL_PIXELS);
+        return undefined;
       }
 
       // Fetch geoid tile and apply correction (orthometric → ellipsoidal)
@@ -163,9 +164,9 @@ export function createGsiTerrainProvider(): Cesium.CustomHeightmapTerrainProvide
           geoidLevel,
         );
       } catch {
-        // Geoid fetch failed: return DEM without correction as fallback
+        // Geoid fetch failed: return DEM-only heights as fallback
         return demHeights;
       }
-    },
+    }) as Cesium.CustomHeightmapTerrainProvider.GeometryCallback,
   });
 }
