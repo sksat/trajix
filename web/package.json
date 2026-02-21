@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && vite build && mv dist/trajix/cesium dist/cesium && rm -r dist/trajix",
     "preview": "vite preview",
     "wasm:build": "wasm-pack build ../crates/trajix-wasm --target web --out-dir pkg",
     "test": "vitest run",
