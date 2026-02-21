@@ -2,7 +2,8 @@ import { useCallback, useState } from "react";
 import type * as Cesium from "cesium";
 import { useGnssData } from "./hooks/useGnssData";
 import { FileLoader } from "./components/FileLoader";
-import { CesiumMap } from "./components/CesiumMap";
+import { CesiumMap, GSI_IMAGERY } from "./components/CesiumMap";
+import type { GsiImageryKey } from "./components/CesiumMap";
 import { PlaybackControls } from "./components/PlaybackControls";
 import type { ProcessingResult } from "./types/gnss";
 import "./App.css";
@@ -10,6 +11,7 @@ import "./App.css";
 export default function App() {
   const { state, processFile } = useGnssData();
   const [showNlp, setShowNlp] = useState(false);
+  const [imagery, setImagery] = useState<GsiImageryKey>("seamlessphoto");
   const [viewer, setViewer] = useState<Cesium.Viewer | null>(null);
 
   const handleViewerReady = useCallback((v: Cesium.Viewer) => {
@@ -37,6 +39,7 @@ export default function App() {
             <CesiumMap
               result={state.result}
               showNlp={showNlp}
+              imagery={imagery}
               onViewerReady={handleViewerReady}
             />
             <PlaybackControls viewer={viewer} />
@@ -45,6 +48,19 @@ export default function App() {
             <ResultSummary result={state.result} />
             <div className="layer-controls">
               <h3>Layers</h3>
+              <label className="toggle-label">
+                地図:
+                <select
+                  value={imagery}
+                  onChange={(e) => setImagery(e.target.value as GsiImageryKey)}
+                >
+                  {Object.entries(GSI_IMAGERY).map(([key, { label }]) => (
+                    <option key={key} value={key}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
+              </label>
               <label className="toggle-label">
                 <input
                   type="checkbox"

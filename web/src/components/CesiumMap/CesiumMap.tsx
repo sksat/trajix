@@ -18,15 +18,31 @@ const POLYLINE_GAP_MS = 3000;
 /// Default playback speed multiplier (50x = ~8 min for 6.5h recording).
 const DEFAULT_MULTIPLIER = 50;
 
+const GSI_CREDIT = new Cesium.Credit(
+  '<a href="https://maps.gsi.go.jp/development/ichiran.html">国土地理院</a>',
+);
+
+// GSI imagery tile definitions
+export const GSI_IMAGERY = {
+  seamlessphoto: { url: "https://cyberjapandata.gsi.go.jp/xyz/seamlessphoto/{z}/{x}/{y}.jpg", maxZoom: 18, label: "航空写真" },
+  pale:          { url: "https://cyberjapandata.gsi.go.jp/xyz/pale/{z}/{x}/{y}.png",          maxZoom: 18, label: "淡色地図" },
+  std:           { url: "https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png",           maxZoom: 18, label: "標準地図" },
+  relief:        { url: "https://cyberjapandata.gsi.go.jp/xyz/relief/{z}/{x}/{y}.png",        maxZoom: 15, label: "色別標高図" },
+} as const;
+
+export type GsiImageryKey = keyof typeof GSI_IMAGERY;
+
 interface CesiumMapProps {
   result: ProcessingResult;
   showNlp?: boolean;
+  imagery?: GsiImageryKey;
   onViewerReady?: (viewer: Cesium.Viewer) => void;
 }
 
 export function CesiumMap({
   result,
   showNlp = false,
+  imagery = "seamlessphoto",
   onViewerReady,
 }: CesiumMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -40,14 +56,12 @@ export function CesiumMap({
       Cesium.Ion.defaultAccessToken = ION_TOKEN;
     }
 
-    // GSI pale map tiles
+    const defaultImagery = GSI_IMAGERY.seamlessphoto;
     const gsiProvider = new Cesium.UrlTemplateImageryProvider({
-      url: "https://cyberjapandata.gsi.go.jp/xyz/pale/{z}/{x}/{y}.png",
-      credit: new Cesium.Credit(
-        '<a href="https://maps.gsi.go.jp/development/ichiran.html">国土地理院</a>',
-      ),
+      url: defaultImagery.url,
+      credit: GSI_CREDIT,
       minimumLevel: 2,
-      maximumLevel: 18,
+      maximumLevel: defaultImagery.maxZoom,
     });
 
     const viewer = new Cesium.Viewer(containerRef.current, {
@@ -82,6 +96,24 @@ export function CesiumMap({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Switch imagery layer when selection changes
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!viewer) return;
+
+    const config = GSI_IMAGERY[imagery];
+    const layers = viewer.imageryLayers;
+    layers.removeAll();
+    layers.addImageryProvider(
+      new Cesium.UrlTemplateImageryProvider({
+        url: config.url,
+        credit: GSI_CREDIT,
+        minimumLevel: 2,
+        maximumLevel: config.maxZoom,
+      }),
+    );
+  }, [imagery]);
 
   // Render track + animation marker when result or NLP toggle changes.
   // Terrain sampling is async, so we use a cancellation flag.

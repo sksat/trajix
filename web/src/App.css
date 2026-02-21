@@ -179,6 +179,21 @@
   accent-color: #8ab4f8;
 }
 
+.layer-controls select {
+  background: #1a1a2e;
+  border: 1px solid #3a3a5a;
+  border-radius: 4px;
+  color: #e0e0e0;
+  font-size: 0.8rem;
+  padding: 4px 6px;
+  cursor: pointer;
+  outline: none;
+}
+
+.layer-controls select:focus {
+  border-color: #8ab4f8;
+}
+
 /* Fix Quality Summary */
 .fix-quality-summary {
   margin-top: 0.5rem;
