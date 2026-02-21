@@ -7,6 +7,9 @@ import {
   resetBearing,
   autoHeading,
   detectUserDrag,
+  estimateFrameSpeed,
+  computeTargetRange,
+  lerpRange,
   adjustPitchForTerrain,
   checkLineOfSight,
   approxCameraPosition,
@@ -239,7 +242,8 @@ describe("detectUserDrag", () => {
   });
 
   it("no drag for sub-threshold change", () => {
-    const r = detectUserDrag(1.001, 1.0, 0.5);
+    // Default threshold is 0.01 rad
+    const r = detectUserDrag(1.005, 1.0, 0.5);
     expect(r.dragged).toBe(false);
   });
 
@@ -271,6 +275,115 @@ describe("detectUserDrag", () => {
   it("respects custom threshold", () => {
     const r = detectUserDrag(1.01, 1.0, 0.0, 0.1);
     expect(r.dragged).toBe(false); // below 0.1 threshold
+  });
+});
+
+// ────────────────────────────────────────────
+// estimateFrameSpeed
+// ────────────────────────────────────────────
+
+describe("estimateFrameSpeed", () => {
+  it("returns 0 when no previous position", () => {
+    expect(estimateFrameSpeed(null, null, 0, 0)).toBe(0);
+  });
+
+  it("returns 0 for same position", () => {
+    expect(estimateFrameSpeed(toRad(139), toRad(35), toRad(139), toRad(35))).toBeCloseTo(0);
+  });
+
+  it("computes distance for east movement at equator", () => {
+    // 0.001 rad ≈ 6.371 km at equator
+    const d = estimateFrameSpeed(0, 0, 0.001, 0);
+    expect(d).toBeCloseTo(6371, -1);
+  });
+
+  it("computes smaller distance at higher latitude", () => {
+    const dEquator = estimateFrameSpeed(0, 0, 0.001, 0);
+    const dHighLat = estimateFrameSpeed(0, toRad(60), 0.001, toRad(60));
+    expect(dHighLat).toBeLessThan(dEquator);
+    // At 60°, cos(60°) = 0.5 → half the east-west distance
+    expect(dHighLat).toBeCloseTo(dEquator * 0.5, -1);
+  });
+
+  it("returns correct distance for north movement", () => {
+    const d = estimateFrameSpeed(0, 0, 0, 0.001);
+    expect(d).toBeCloseTo(6371, -1);
+  });
+});
+
+// ────────────────────────────────────────────
+// computeTargetRange
+// ────────────────────────────────────────────
+
+describe("computeTargetRange", () => {
+  it("returns baseRange for zero speed", () => {
+    expect(computeTargetRange(0)).toBe(200);
+  });
+
+  it("returns minRange when result would be below", () => {
+    expect(computeTargetRange(-10)).toBe(200);
+  });
+
+  it("scales with speed", () => {
+    // Walking at 50x: ~1.2 m/frame → 200 + 1.2*50 = 260
+    expect(computeTargetRange(1.2)).toBeCloseTo(260);
+  });
+
+  it("caps at maxRange", () => {
+    expect(computeTargetRange(1000)).toBe(3000);
+  });
+
+  it("reasonable range for driving at 50x", () => {
+    // 50 km/h × 50x / 60fps = 11.6 m/frame → 200 + 11.6*50 = 780
+    const r = computeTargetRange(11.6);
+    expect(r).toBeGreaterThan(700);
+    expect(r).toBeLessThan(900);
+  });
+
+  it("respects custom options", () => {
+    const r = computeTargetRange(10, {
+      baseRange: 100,
+      speedScale: 100,
+      minRange: 100,
+      maxRange: 5000,
+    });
+    expect(r).toBeCloseTo(1100);
+  });
+});
+
+// ────────────────────────────────────────────
+// lerpRange
+// ────────────────────────────────────────────
+
+describe("lerpRange", () => {
+  it("stays at current if already at target", () => {
+    expect(lerpRange(500, 500)).toBe(500);
+  });
+
+  it("moves toward target", () => {
+    const r = lerpRange(200, 800);
+    expect(r).toBeGreaterThan(200);
+    expect(r).toBeLessThan(800);
+  });
+
+  it("converges after many iterations", () => {
+    let range = 200;
+    for (let i = 0; i < 5000; i++) {
+      range = lerpRange(range, 800);
+    }
+    expect(range).toBeCloseTo(800, 0);
+  });
+
+  it("respects custom factor", () => {
+    const slow = lerpRange(200, 800, 0.001);
+    const fast = lerpRange(200, 800, 0.1);
+    expect(fast).toBeGreaterThan(slow);
+  });
+
+  it("approaches from above", () => {
+    const r = lerpRange(1000, 300);
+    expect(r).toBeLessThan(1000);
+    expect(r).toBeGreaterThan(300);
   });
 });
 

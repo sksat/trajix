@@ -6,6 +6,9 @@ import {
   resetBearing,
   autoHeading,
   detectUserDrag,
+  estimateFrameSpeed,
+  computeTargetRange,
+  lerpRange,
   adjustPitchForTerrain,
   checkLineOfSight,
   approxCameraPosition,
@@ -75,6 +78,14 @@ export function PlaybackControls({ viewer }: PlaybackControlsProps) {
       );
       if (totalSec <= 0) return;
 
+      // Auto-pause when reaching the end
+      if (
+        clock.shouldAnimate &&
+        Cesium.JulianDate.compare(clock.currentTime, clock.stopTime) >= 0
+      ) {
+        clock.shouldAnimate = false;
+      }
+
       const elapsedSec = Cesium.JulianDate.secondsDifference(
         clock.currentTime,
         clock.startTime,
@@ -84,7 +95,7 @@ export function PlaybackControls({ viewer }: PlaybackControlsProps) {
       setProgress(ratio);
       setElapsedStr(formatDuration(elapsedSec));
 
-      // Sync React state with clock (e.g. if clock auto-paused at end)
+      // Sync React state with clock
       setIsPlaying(clock.shouldAnimate);
     };
 
@@ -187,12 +198,40 @@ export function PlaybackControls({ viewer }: PlaybackControlsProps) {
     // LOS occlusion nudge state
     const LOS_NUDGE_SPEED = 0.02; // per-frame heading nudge (radians)
 
+    // Speed-adaptive range state
+    let prevTargetLon: number | null = null;
+    let prevTargetLat: number | null = null;
+    let speedMpf = 0;
+    const SPEED_ALPHA = 0.02;
+    let wasAnimating = false;
+
     const onPreRender = () => {
       const pos = marker.position?.getValue(viewer.clock.currentTime);
       if (!pos) return;
 
       const target = Cesium.Cartographic.fromCartesian(pos);
+      const isAnimating = viewer.clock.shouldAnimate;
 
+      // Reset speed tracker on animation start/resume
+      if (isAnimating && !wasAnimating) {
+        prevTargetLon = null;
+        prevTargetLat = null;
+        speedMpf = 0;
+      }
+      wasAnimating = isAnimating;
+
+      // Speed estimation from raw marker position (only when animating)
+      if (isAnimating) {
+        const frameSpeed = estimateFrameSpeed(
+          prevTargetLon, prevTargetLat,
+          target.longitude, target.latitude,
+        );
+        speedMpf = speedMpf * (1 - SPEED_ALPHA) + frameSpeed * SPEED_ALPHA;
+      }
+      prevTargetLon = target.longitude;
+      prevTargetLat = target.latitude;
+
+      // Position smoothing
       if (!smoothed) {
         smoothed = target.clone();
       } else {
@@ -204,6 +243,10 @@ export function PlaybackControls({ viewer }: PlaybackControlsProps) {
         if (Math.abs(dLon) > SNAP_RAD || Math.abs(dLat) > SNAP_RAD) {
           smoothed = target.clone();
           resetBearing(bearing);
+          // Reset speed tracker on position jump
+          prevTargetLon = null;
+          prevTargetLat = null;
+          speedMpf = 0;
         } else {
           smoothed.longitude += dLon * H_LERP;
           smoothed.latitude += dLat * H_LERP;
@@ -211,10 +254,12 @@ export function PlaybackControls({ viewer }: PlaybackControlsProps) {
         }
       }
 
-      // Update bearing tracker with smoothed position
-      updateBearing(bearing, smoothed.longitude, smoothed.latitude);
+      // Bearing update (only when animating — prevents drift while paused)
+      if (isAnimating) {
+        updateBearing(bearing, smoothed.longitude, smoothed.latitude);
+      }
 
-      // Read user-adjusted HPR before overwriting (preserves drag/zoom)
+      // Read user-adjusted HPR (always — allows drag/zoom while paused)
       if (initialized) {
         const drag = detectUserDrag(
           viewer.camera.heading,
@@ -234,18 +279,19 @@ export function PlaybackControls({ viewer }: PlaybackControlsProps) {
         range = Cesium.Cartesian3.distance(camPos, center);
       }
 
-      // Auto-rotate heading toward travel direction (when not top-down)
-      if (bearing.hasBearing && initialized) {
-        heading = autoHeading(
-          heading,
-          bearing.bearing,
-          headingOffset,
-          pitch,
-        );
-      }
+      // Auto-heading + LOS + range adaptation (only when animating)
+      if (isAnimating && initialized) {
+        // Auto-rotate heading toward travel direction (when not top-down)
+        if (bearing.hasBearing) {
+          heading = autoHeading(
+            heading,
+            bearing.bearing,
+            headingOffset,
+            pitch,
+          );
+        }
 
-      // LOS occlusion avoidance: nudge heading when terrain blocks view
-      if (initialized) {
+        // LOS occlusion avoidance: nudge heading when terrain blocks view
         const getTerrainH = (lon: number, lat: number) =>
           viewer.scene.globe.getHeight(
             new Cesium.Cartographic(lon, lat, 0),
@@ -278,9 +324,13 @@ export function PlaybackControls({ viewer }: PlaybackControlsProps) {
           );
           heading += dir * LOS_NUDGE_SPEED;
         }
+
+        // Speed-adaptive range
+        const rangeTarget = computeTargetRange(speedMpf);
+        range = lerpRange(range, rangeTarget);
       }
 
-      // Terrain collision: adjust pitch to prevent camera clipping into terrain
+      // Terrain collision (always — prevent camera underground)
       const center = Cesium.Cartesian3.fromRadians(
         smoothed.longitude,
         smoothed.latitude,

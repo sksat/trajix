@@ -188,7 +188,7 @@ export function detectUserDrag(
   currentOffset: number,
   threshold?: number,
 ): DragDetectResult {
-  const thresh = threshold ?? 0.003;
+  const thresh = threshold ?? 0.01;
   const userDelta = angleDiff(cameraHeading, lastSetHeading);
 
   if (Math.abs(userDelta) > thresh) {
@@ -200,6 +200,60 @@ export function detectUserDrag(
   }
 
   return { headingOffset: currentOffset, dragged: false };
+}
+
+// ────────────────────────────────────────────
+// Speed-adaptive camera range
+// ────────────────────────────────────────────
+
+/**
+ * Estimate per-frame speed (meters) from consecutive raw positions.
+ * Use with EMA for smooth tracking.
+ */
+export function estimateFrameSpeed(
+  prevLon: number | null,
+  prevLat: number | null,
+  lon: number,
+  lat: number,
+): number {
+  if (prevLon === null || prevLat === null) return 0;
+  const R = 6371000;
+  const dX = (lon - prevLon) * R * Math.cos(lat);
+  const dY = (lat - prevLat) * R;
+  return Math.sqrt(dX * dX + dY * dY);
+}
+
+/**
+ * Compute target camera range from per-frame speed.
+ * Faster movement → wider view (zoom out).
+ */
+export function computeTargetRange(
+  speedMpf: number,
+  opts?: {
+    baseRange?: number;
+    speedScale?: number;
+    minRange?: number;
+    maxRange?: number;
+  },
+): number {
+  const base = opts?.baseRange ?? 200;
+  const scale = opts?.speedScale ?? 50;
+  const min = opts?.minRange ?? 200;
+  const max = opts?.maxRange ?? 3000;
+  return Math.max(min, Math.min(max, base + speedMpf * scale));
+}
+
+/**
+ * Smoothly lerp camera range toward target.
+ * Gentle factor preserves user zoom while slowly adapting.
+ */
+export function lerpRange(
+  currentRange: number,
+  targetRange: number,
+  factor?: number,
+): number {
+  const f = factor ?? 0.003;
+  return currentRange + (targetRange - currentRange) * f;
 }
 
 // ────────────────────────────────────────────
