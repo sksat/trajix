@@ -19,9 +19,13 @@ pub struct Sample<V> {
     pub value: V,
 }
 
-/// Decimate a sorted slice of samples by keeping at most one sample per `interval_ms`.
+/// Decimate a sorted slice of samples by keeping one sample per fixed time bin.
 ///
-/// Within each interval, the sample closest to the interval boundary is selected.
+/// Uses a **fixed grid** starting from the first sample's timestamp.
+/// For each bin `[start + n*interval, start + (n+1)*interval)`, the sample closest
+/// to the bin center is selected. This prevents drift that would occur if bins
+/// were anchored to the previously selected sample.
+///
 /// The first and last samples are always preserved.
 ///
 /// # Invariants
@@ -30,6 +34,7 @@ pub struct Sample<V> {
 /// - Output preserves chronological order.
 /// - Output always includes the first and last sample (if input is non-empty).
 /// - Output length <= input length.
+/// - Bins are uniformly spaced regardless of data distribution.
 ///
 /// # Panics
 /// Panics if `interval_ms <= 0`.
@@ -40,24 +45,58 @@ pub fn decimate_by_time<V: Copy>(samples: &[Sample<V>], interval_ms: i64) -> Vec
         return samples.to_vec();
     }
 
+    let start = samples[0].time_ms;
     let mut result = Vec::new();
 
     // Always keep first sample
     result.push(samples[0]);
-    let mut next_boundary = samples[0].time_ms + interval_ms;
 
-    for &sample in &samples[1..samples.len() - 1] {
-        if sample.time_ms >= next_boundary {
-            result.push(sample);
-            // Advance boundary from the sample we just kept (not from the theoretical boundary)
-            // to prevent drift accumulation
-            next_boundary = sample.time_ms + interval_ms;
+    // Process bins on a fixed grid: [start + n*interval, start + (n+1)*interval)
+    // Skip bin 0 (already covered by first sample). Start from bin 1.
+    let mut bin_idx = 1i64;
+    let mut i = 1; // current position in samples (skip first)
+    let last_idx = samples.len() - 1;
+
+    while i < last_idx {
+        let bin_start = start + bin_idx * interval_ms;
+        let bin_center = bin_start + interval_ms / 2;
+
+        // Skip forward to the next bin if current sample is before it
+        if samples[i].time_ms < bin_start {
+            i += 1;
+            continue;
+        }
+
+        // Find the sample closest to bin center within this bin
+        let bin_end = bin_start + interval_ms;
+        let mut best_idx = i;
+        let mut best_dist = (samples[i].time_ms - bin_center).abs();
+
+        let mut j = i + 1;
+        while j < last_idx && samples[j].time_ms < bin_end {
+            let dist = (samples[j].time_ms - bin_center).abs();
+            if dist < best_dist {
+                best_dist = dist;
+                best_idx = j;
+            }
+            j += 1;
+        }
+
+        result.push(samples[best_idx]);
+        i = j; // advance past this bin
+        bin_idx += 1;
+
+        // If we jumped multiple bins, catch up
+        if i < last_idx {
+            let next_bin_for_sample = (samples[i].time_ms - start) / interval_ms;
+            if next_bin_for_sample > bin_idx {
+                bin_idx = next_bin_for_sample;
+            }
         }
     }
 
     // Always keep last sample
-    let last = samples[samples.len() - 1];
-    // Avoid duplicate if last was already added
+    let last = samples[last_idx];
     if result.last().map(|s| s.time_ms) != Some(last.time_ms) {
         result.push(last);
     }
@@ -150,6 +189,79 @@ pub fn lttb<V: LttbValue>(samples: &[Sample<V>], target_count: usize) -> Vec<Sam
     result.push(samples[n - 1]);
 
     result
+}
+
+/// LTTB that returns selected **indices** instead of values.
+///
+/// Use this for multi-axis data: run LTTB on one representative signal
+/// (e.g., L2 magnitude) and use the returned indices to select the same
+/// samples from all axes, keeping them aligned.
+///
+/// # Example
+/// ```
+/// use trajix_core::downsample::{lttb_indices, Sample};
+///
+/// let magnitude: Vec<Sample<f64>> = vec![/* ... */];
+/// let indices = lttb_indices(&magnitude, 50);
+/// // Use indices to select from x, y, z arrays
+/// ```
+pub fn lttb_indices<V: LttbValue>(samples: &[Sample<V>], target_count: usize) -> Vec<usize> {
+    assert!(target_count >= 2, "target_count must be >= 2");
+
+    if samples.len() <= target_count {
+        return (0..samples.len()).collect();
+    }
+
+    let n = samples.len();
+    let mut indices = Vec::with_capacity(target_count);
+
+    indices.push(0);
+
+    let bucket_count = target_count - 2;
+    let bucket_size = (n - 2) as f64 / (bucket_count + 1) as f64;
+    let mut prev_selected_idx = 0usize;
+
+    for bucket_idx in 0..bucket_count {
+        let bucket_start = 1 + (bucket_idx as f64 * bucket_size) as usize;
+        let bucket_end = (1 + ((bucket_idx + 1) as f64 * bucket_size) as usize).min(n - 1);
+
+        let next_start = bucket_end;
+        let next_end = if bucket_idx + 1 < bucket_count {
+            1 + ((bucket_idx + 2) as f64 * bucket_size) as usize
+        } else {
+            n
+        };
+        let next_end = next_end.min(n);
+
+        let (avg_x, avg_y) = bucket_average(&samples[next_start..next_end]);
+
+        let prev_x = samples[prev_selected_idx].time_ms as f64;
+        let prev_y = samples[prev_selected_idx].value.to_f64();
+
+        let mut max_area = -1.0f64;
+        let mut max_idx = bucket_start;
+
+        for i in bucket_start..bucket_end {
+            let area = triangle_area(
+                prev_x,
+                prev_y,
+                samples[i].time_ms as f64,
+                samples[i].value.to_f64(),
+                avg_x,
+                avg_y,
+            );
+            if area > max_area {
+                max_area = area;
+                max_idx = i;
+            }
+        }
+
+        indices.push(max_idx);
+        prev_selected_idx = max_idx;
+    }
+
+    indices.push(n - 1);
+    indices
 }
 
 /// Trait for values that can be used with LTTB.
@@ -519,5 +631,219 @@ mod tests {
         // Collinear points → area = 0
         let area = triangle_area(0.0, 0.0, 1.0, 1.0, 2.0, 2.0);
         assert!(area.abs() < 1e-10);
+    }
+
+    // ──────────────────────────────────────────────
+    // lttb_indices tests (multi-axis support)
+    // ──────────────────────────────────────────────
+
+    #[test]
+    fn lttb_indices_returns_correct_count() {
+        let samples: Vec<_> = (0..200)
+            .map(|i| Sample {
+                time_ms: i as i64 * 10,
+                value: (i as f64 * 0.05).sin(),
+            })
+            .collect();
+
+        let indices = lttb_indices(&samples, 20);
+        assert_eq!(indices.len(), 20);
+    }
+
+    #[test]
+    fn lttb_indices_first_and_last() {
+        let samples: Vec<_> = (0..100)
+            .map(|i| Sample {
+                time_ms: i as i64,
+                value: i as f64,
+            })
+            .collect();
+
+        let indices = lttb_indices(&samples, 10);
+        assert_eq!(indices[0], 0);
+        assert_eq!(*indices.last().unwrap(), 99);
+    }
+
+    #[test]
+    fn lttb_indices_match_lttb_values() {
+        let samples: Vec<_> = (0..200)
+            .map(|i| Sample {
+                time_ms: i as i64 * 10,
+                value: (i as f64 * 0.1).sin(),
+            })
+            .collect();
+
+        let values = lttb(&samples, 15);
+        let indices = lttb_indices(&samples, 15);
+
+        assert_eq!(values.len(), indices.len());
+        for (val, &idx) in values.iter().zip(indices.iter()) {
+            assert_eq!(val.time_ms, samples[idx].time_ms);
+            assert_eq!(val.value, samples[idx].value);
+        }
+    }
+
+    #[test]
+    fn lttb_indices_multi_axis_alignment() {
+        // Simulate 3-axis accelerometer: compute magnitude for LTTB,
+        // then use indices to select from all axes
+        let n = 200;
+        let x: Vec<f64> = (0..n).map(|i| (i as f64 * 0.1).sin()).collect();
+        let y: Vec<f64> = (0..n).map(|i| (i as f64 * 0.1).cos()).collect();
+        let z: Vec<f64> = (0..n).map(|i| (i as f64 * 0.05).sin()).collect();
+
+        let magnitude: Vec<Sample<f64>> = (0..n)
+            .map(|i| Sample {
+                time_ms: i as i64 * 10,
+                value: (x[i] * x[i] + y[i] * y[i] + z[i] * z[i]).sqrt(),
+            })
+            .collect();
+
+        let indices = lttb_indices(&magnitude, 20);
+        assert_eq!(indices.len(), 20);
+
+        // All indices should be valid and in bounds
+        for &idx in &indices {
+            assert!(idx < n);
+        }
+
+        // Indices should be in ascending order
+        for window in indices.windows(2) {
+            assert!(window[0] < window[1]);
+        }
+
+        // Using indices to select from all axes gives aligned data
+        let selected_x: Vec<f64> = indices.iter().map(|&i| x[i]).collect();
+        let selected_y: Vec<f64> = indices.iter().map(|&i| y[i]).collect();
+        let selected_z: Vec<f64> = indices.iter().map(|&i| z[i]).collect();
+
+        assert_eq!(selected_x.len(), 20);
+        assert_eq!(selected_y.len(), 20);
+        assert_eq!(selected_z.len(), 20);
+    }
+
+    // ──────────────────────────────────────────────
+    // Edge case tests (from Codex review)
+    // ──────────────────────────────────────────────
+
+    #[test]
+    fn decimate_fixed_grid_no_drift() {
+        // With fixed grid, bins are uniformly spaced regardless of data.
+        // Create data at slightly irregular intervals and verify bins are stable.
+        let mut samples = Vec::new();
+        let mut t = 1000i64;
+        for i in 0..100 {
+            samples.push(Sample {
+                time_ms: t,
+                value: i as f64,
+            });
+            // Irregular spacing: 8-12ms
+            t += 10 + (i % 3) as i64 - 1;
+        }
+
+        let result = decimate_by_time(&samples, 100);
+
+        // Verify bins don't drift: consecutive selected points should be
+        // roughly interval_ms apart (within one bin width)
+        for window in result[1..result.len() - 1].windows(2) {
+            let gap = window[1].time_ms - window[0].time_ms;
+            assert!(
+                gap >= 80 && gap <= 200,
+                "unexpected gap {gap} between t={} and t={}",
+                window[0].time_ms,
+                window[1].time_ms
+            );
+        }
+    }
+
+    #[test]
+    fn decimate_with_time_gap() {
+        // Data with a big gap in the middle (simulating sensor dropout)
+        let mut samples: Vec<Sample<f64>> = Vec::new();
+        // First burst: 0-500ms at 10ms intervals
+        for i in 0..50 {
+            samples.push(Sample {
+                time_ms: i * 10,
+                value: i as f64,
+            });
+        }
+        // Gap: 5 seconds
+        // Second burst: 5500-6000ms at 10ms intervals
+        for i in 0..50 {
+            samples.push(Sample {
+                time_ms: 5500 + i * 10,
+                value: (50 + i) as f64,
+            });
+        }
+
+        let result = decimate_by_time(&samples, 100);
+
+        // Should have samples from both bursts
+        let has_early = result.iter().any(|s| s.time_ms < 1000);
+        let has_late = result.iter().any(|s| s.time_ms > 5000);
+        assert!(has_early, "should have samples from first burst");
+        assert!(has_late, "should have samples from second burst");
+
+        // First and last preserved
+        assert_eq!(result.first().unwrap().time_ms, 0);
+        assert_eq!(result.last().unwrap().time_ms, 5990);
+    }
+
+    #[test]
+    fn decimate_selects_nearest_to_center() {
+        // Fixed grid: bins are [1000,1100), [1100,1200), [1200,1300), ...
+        // Bin 1 = [1100, 1200), center at 1150
+        // Place samples at 1110, 1148, 1190 → 1148 is closest to center 1150
+        let samples = make_samples(&[
+            (1000, 0.0),  // first (always kept, bin 0)
+            (1110, 1.0),  // bin 1, distance to 1150 = 40
+            (1148, 2.0),  // bin 1, distance to 1150 = 2 (closest)
+            (1190, 3.0),  // bin 1, distance to 1150 = 40
+            (2000, 4.0),  // last (always kept)
+        ]);
+
+        let result = decimate_by_time(&samples, 100);
+
+        // Should keep first, one from bin 1, and last
+        assert_eq!(result.first().unwrap().time_ms, 1000);
+        assert_eq!(result.last().unwrap().time_ms, 2000);
+
+        // The selected point from bin 1 should be closest to center (1150)
+        let bin_point = result.iter().find(|s| s.time_ms > 1000 && s.time_ms < 2000);
+        assert!(bin_point.is_some(), "should have a point from bin 1");
+        assert_eq!(bin_point.unwrap().time_ms, 1148);
+    }
+
+    #[test]
+    fn lttb_constant_data() {
+        // All values the same - should still work without panics
+        let samples: Vec<_> = (0..100)
+            .map(|i| Sample {
+                time_ms: i as i64,
+                value: 42.0,
+            })
+            .collect();
+
+        let result = lttb(&samples, 10);
+        assert_eq!(result.len(), 10);
+        assert!(result.iter().all(|s| s.value == 42.0));
+    }
+
+    #[test]
+    fn lttb_two_distinct_values() {
+        // Step function: 0 then 1
+        let samples: Vec<_> = (0..100)
+            .map(|i| Sample {
+                time_ms: i as i64,
+                value: if i < 50 { 0.0 } else { 1.0 },
+            })
+            .collect();
+
+        let result = lttb(&samples, 10);
+        assert_eq!(result.len(), 10);
+
+        // Should have both 0.0 and 1.0 values
+        assert!(result.iter().any(|s| s.value == 0.0));
+        assert!(result.iter().any(|s| s.value == 1.0));
     }
 }
