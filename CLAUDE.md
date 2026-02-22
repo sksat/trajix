@@ -75,4 +75,9 @@ Fixtures cover normal cases, edge cases (empty fields, fallback values, missing 
 - **TDD**: Write tests first against fixture data, then implement parsing
 - **Incremental commits**: Small, focused commits for each record type or feature
 - **Use latest dependency versions**
+- **Before committing**, always verify:
+  - `cargo fmt --check` — CI enforces formatting
+  - `cargo clippy --workspace --all-targets -- -D warnings` — CI enforces no warnings
+  - `cargo test` — all Rust tests pass
+  - `cd web && npx tsc -b --noEmit` — TypeScript type checking (if web code changed)
 - See `DESIGN.md` for full architecture, DuckDB schema, visualization design, and implementation roadmap
