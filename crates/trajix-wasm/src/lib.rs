@@ -214,8 +214,7 @@ impl GnssLogProcessor {
         // Finalize streaming processors
         let (status_epochs, fix_epochs) = self.aggregator.finalize();
         let raw_trajectory = self.dead_reckoning.finalize();
-        let dr_trajectory =
-            smooth_trajectory(&raw_trajectory, DrSmoothing::EndpointConstrained);
+        let dr_trajectory = smooth_trajectory(&raw_trajectory, DrSmoothing::EndpointConstrained);
 
         let result = ProcessingResult {
             header: self.header,
