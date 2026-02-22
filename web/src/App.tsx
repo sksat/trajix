@@ -192,7 +192,7 @@ export default function App() {
                       </div>
                     </CollapsibleSection>
                     {isMobile && (
-                      <CollapsibleSection title="Charts" defaultOpen={false}>
+                      <CollapsibleSection title="Charts">
                         <TimeSeriesPanel
                           statusEpochs={state.result.status_epochs}
                           fixEpochs={state.result.fix_epochs}
