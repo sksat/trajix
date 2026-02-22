@@ -13,3 +13,6 @@ readme = "../../README.md"
 nalgebra = "0.34"
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
+
+[dev-dependencies]
+serde_json = "1"

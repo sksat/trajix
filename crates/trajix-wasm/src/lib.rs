@@ -6,8 +6,10 @@ use trajix::dead_reckoning::{DeadReckoning, DrConfig, DrSource};
 use trajix::downsample::{DecimatedSample, StreamingDecimator};
 use trajix::parser::header::HeaderInfo;
 use trajix::parser::line::{Record, parse_line};
+use trajix::parser::time_context::TimestampInferer;
 use trajix::quality::{FixQuality, FixQualityClassifier};
 use trajix::record::fix::FixRecord;
+use trajix::record::status::SatelliteSnapshot;
 use trajix::summary::EpochAggregator;
 
 // ────────────────────────────────────────────
@@ -85,10 +87,10 @@ pub struct GnssLogProcessor {
     rotation_decimator: StreamingDecimator<RotationValue>,
 
     // ─── Per-satellite snapshots (for sky plot + DuckDB status table) ───
-    satellite_snapshots: Vec<SatelliteSnapshotJs>,
+    satellite_snapshots: Vec<SatelliteSnapshot>,
 
     // ─── Time context for Status timestamp inference ───
-    last_timestamp_ms: Option<i64>,
+    timestamp_inferer: TimestampInferer,
 
     // ─── Counts ───
     fix_count: u64,
@@ -136,7 +138,7 @@ impl GnssLogProcessor {
             orientation_decimator: StreamingDecimator::new(SENSOR_DECIMATE_MS),
             rotation_decimator: StreamingDecimator::new(SENSOR_DECIMATE_MS),
             satellite_snapshots: Vec::new(),
-            last_timestamp_ms: None,
+            timestamp_inferer: TimestampInferer::new(),
             fix_count: 0,
             status_count: 0,
             raw_count: 0,
@@ -344,11 +346,9 @@ impl GnssLogProcessor {
             Some(Ok(Record::Skipped)) => {
                 self.skipped_count += 1;
             }
-            Some(Ok(record)) => {
-                // Time annotation: update tracker
-                if let Some(ts) = record.timestamp_ms() {
-                    self.last_timestamp_ms = Some(ts);
-                }
+            Some(Ok(mut record)) => {
+                // Time annotation: track timestamps and fill missing Status timestamps
+                self.timestamp_inferer.annotate(&mut record);
 
                 match record {
                     Record::Fix(f) => {
@@ -362,23 +362,12 @@ impl GnssLogProcessor {
                         self.fixes.push(f);
                         self.fix_qualities.push(quality);
                     }
-                    Record::Status(mut s) => {
+                    Record::Status(s) => {
                         self.status_count += 1;
-                        // Fill missing timestamp
-                        if s.unix_time_ms.is_none() {
-                            s.unix_time_ms = self.last_timestamp_ms;
-                        }
                         // Store per-satellite snapshot for sky plot + DuckDB
                         if let Some(ts) = s.unix_time_ms {
-                            self.satellite_snapshots.push(SatelliteSnapshotJs {
-                                time_ms: ts,
-                                constellation: s.constellation.as_u8(),
-                                svid: s.svid,
-                                azimuth_deg: s.azimuth_deg,
-                                elevation_deg: s.elevation_deg,
-                                cn0_dbhz: s.cn0_dbhz,
-                                used_in_fix: s.used_in_fix,
-                            });
+                            self.satellite_snapshots
+                                .push(SatelliteSnapshot::from_status(&s, ts));
                         }
                         // Feed to aggregator (Status is consumed, not stored)
                         self.aggregator.push(Record::Status(s));
@@ -393,36 +382,21 @@ impl GnssLogProcessor {
                         // Feed to Dead Reckoning (full resolution)
                         self.dead_reckoning.push_accel(&s);
                         // Decimate for chart display (100Hz → 10Hz)
-                        self.accel_decimator.push(
-                            s.utc_time_ms,
-                            SensorXyz {
-                                x: s.x - s.bias_x,
-                                y: s.y - s.bias_y,
-                                z: s.z - s.bias_z,
-                            },
-                        );
+                        let (x, y, z) = s.unbiased();
+                        self.accel_decimator
+                            .push(s.utc_time_ms, SensorXyz { x, y, z });
                     }
                     Record::UncalGyro(s) => {
                         self.uncal_gyro_count += 1;
-                        self.gyro_decimator.push(
-                            s.utc_time_ms,
-                            SensorXyz {
-                                x: s.x - s.bias_x,
-                                y: s.y - s.bias_y,
-                                z: s.z - s.bias_z,
-                            },
-                        );
+                        let (x, y, z) = s.unbiased();
+                        self.gyro_decimator
+                            .push(s.utc_time_ms, SensorXyz { x, y, z });
                     }
                     Record::UncalMag(s) => {
                         self.uncal_mag_count += 1;
-                        self.mag_decimator.push(
-                            s.utc_time_ms,
-                            SensorXyz {
-                                x: s.x - s.bias_x,
-                                y: s.y - s.bias_y,
-                                z: s.z - s.bias_z,
-                            },
-                        );
+                        let (x, y, z) = s.unbiased();
+                        self.mag_decimator
+                            .push(s.utc_time_ms, SensorXyz { x, y, z });
                     }
                     Record::OrientationDeg(o) => {
                         self.orientation_count += 1;
@@ -490,7 +464,7 @@ struct ProcessingResult {
     dr_trajectory: Vec<DrPointJs>,
 
     /// Per-satellite status snapshots for sky plot and DuckDB status table.
-    satellite_snapshots: Vec<SatelliteSnapshotJs>,
+    satellite_snapshots: Vec<SatelliteSnapshot>,
 
     /// Downsampled sensor data (10Hz) for time-series charts.
     sensor_time_series: SensorTimeSeries,
@@ -553,21 +527,6 @@ struct SensorTimeSeries {
     mag: Vec<DecimatedSample<SensorXyz>>,
     orientation: Vec<DecimatedSample<OrientationValue>>,
     rotation: Vec<DecimatedSample<RotationValue>>,
-}
-
-/// Per-satellite status snapshot for sky plot and DuckDB status table.
-///
-/// One entry per satellite per epoch. Stored during streaming parse
-/// alongside the aggregated epoch summaries.
-#[derive(Debug, Clone, Serialize, Tsify)]
-struct SatelliteSnapshotJs {
-    time_ms: i64,
-    constellation: u8,
-    svid: u32,
-    azimuth_deg: f64,
-    elevation_deg: f64,
-    cn0_dbhz: f64,
-    used_in_fix: bool,
 }
 
 #[cfg(test)]
@@ -756,18 +715,18 @@ Status,,46,1,3,9,1600875010,28.40,10.0,45.0,1,1,1,21.0
 
         assert_eq!(proc.satellite_snapshots.len(), 2);
 
-        // First satellite: GPS (constellation=1), svid=2
+        // First satellite: GPS, svid=2
         let s0 = &proc.satellite_snapshots[0];
-        assert_eq!(s0.constellation, 1); // GPS
+        assert_eq!(s0.constellation, trajix::types::ConstellationType::Gps);
         assert_eq!(s0.svid, 2);
         assert!((s0.azimuth_deg - 192.285).abs() < 0.001);
         assert!((s0.elevation_deg - 31.194557).abs() < 0.001);
         assert!((s0.cn0_dbhz - 25.70).abs() < 0.01);
         assert!(s0.used_in_fix);
 
-        // Second satellite: GLONASS (constellation=3), svid=9
+        // Second satellite: GLONASS, svid=9
         let s1 = &proc.satellite_snapshots[1];
-        assert_eq!(s1.constellation, 3); // GLONASS
+        assert_eq!(s1.constellation, trajix::types::ConstellationType::Glonass);
         assert_eq!(s1.svid, 9);
         assert!((s1.azimuth_deg - 10.0).abs() < 0.001);
         assert!((s1.elevation_deg - 45.0).abs() < 0.001);

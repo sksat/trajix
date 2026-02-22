@@ -41,11 +41,12 @@ pub use parser::filter::FilterRecords;
 pub use parser::header::HeaderInfo;
 pub use parser::line::{Record, parse_line};
 pub use parser::streaming::StreamingParser;
+pub use parser::time_context::TimestampInferer;
 pub use quality::{DEFAULT_GAP_THRESHOLD_MS, FixQuality, FixQualityClassifier, classify_fixes};
 pub use record::fix::FixRecord;
 pub use record::raw::RawRecord;
 pub use record::sensor::{GameRotationVectorRecord, OrientationRecord, UncalibratedSensorRecord};
-pub use record::status::StatusRecord;
+pub use record::status::{SatelliteSnapshot, StatusRecord};
 pub use summary::{ConstellationStats, EpochAggregator, FixEpoch, StatusEpoch};
 pub use types::{CodeType, ConstellationType, FixProvider, RecordType};
 

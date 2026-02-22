@@ -1,7 +1,9 @@
 use serde::{Deserialize, Serialize};
 
 use crate::error::ParseError;
-use crate::types::ConstellationType;
+use crate::types::{
+    ConstellationType, deserialize_constellation_u8, serialize_constellation_u8,
+};
 
 /// Expected number of CSV fields in a Status record (including the "Status" prefix).
 const STATUS_FIELD_COUNT: usize = 14;
@@ -67,6 +69,43 @@ impl StatusRecord {
             has_ephemeris_data: fields[12] == "1",
             baseband_cn0_dbhz: parse_optional_f64(fields[13]),
         })
+    }
+}
+
+/// Per-satellite status snapshot with resolved timestamp.
+///
+/// Flattened from `StatusRecord` for storage/analysis (sky plot, DuckDB).
+/// Created only when a valid timestamp is available.
+///
+/// `constellation` is serialized as `u8` (not string) for compact output
+/// when transferred via serde-wasm-bindgen to JavaScript.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SatelliteSnapshot {
+    pub time_ms: i64,
+    #[serde(
+        serialize_with = "serialize_constellation_u8",
+        deserialize_with = "deserialize_constellation_u8"
+    )]
+    pub constellation: ConstellationType,
+    pub svid: u32,
+    pub azimuth_deg: f64,
+    pub elevation_deg: f64,
+    pub cn0_dbhz: f64,
+    pub used_in_fix: bool,
+}
+
+impl SatelliteSnapshot {
+    /// Create a snapshot from a `StatusRecord` and a resolved timestamp.
+    pub fn from_status(status: &StatusRecord, time_ms: i64) -> Self {
+        Self {
+            time_ms,
+            constellation: status.constellation,
+            svid: status.svid,
+            azimuth_deg: status.azimuth_deg,
+            elevation_deg: status.elevation_deg,
+            cn0_dbhz: status.cn0_dbhz,
+            used_in_fix: status.used_in_fix,
+        }
     }
 }
 
@@ -230,5 +269,49 @@ mod tests {
         let line = "Status,,46,0,99,100,1575420030,25.0,180.0,45.0,1,1,1,22.0";
         let r = StatusRecord::parse(line).unwrap();
         assert_eq!(r.constellation, ConstellationType::Unknown(99));
+    }
+
+    // ── SatelliteSnapshot tests ──
+
+    #[test]
+    fn snapshot_from_status_basic() {
+        let line = "Status,,46,0,1,2,1575420030,25.70,192.285,31.194557,1,1,1,22.1";
+        let status = StatusRecord::parse(line).unwrap();
+        let snap = SatelliteSnapshot::from_status(&status, 1771641934414);
+
+        assert_eq!(snap.time_ms, 1771641934414);
+        assert_eq!(snap.svid, 2);
+        assert!((snap.cn0_dbhz - 25.70).abs() < 0.01);
+        assert!((snap.azimuth_deg - 192.285).abs() < 0.001);
+        assert!((snap.elevation_deg - 31.194557).abs() < 1e-5);
+        assert!(snap.used_in_fix);
+    }
+
+    #[test]
+    fn snapshot_from_status_preserves_constellation() {
+        let cases = [
+            ("Status,,46,0,1,5,1575420030,30.0,90.0,45.0,1,1,1,20.0", ConstellationType::Gps),
+            ("Status,,46,1,3,9,1600875010,28.0,10.0,45.0,1,1,1,21.0", ConstellationType::Glonass),
+            ("Status,,46,2,5,26,1575420030,24.0,318.0,81.0,1,1,1,17.0", ConstellationType::BeiDou),
+        ];
+        for (line, expected) in cases {
+            let status = StatusRecord::parse(line).unwrap();
+            let snap = SatelliteSnapshot::from_status(&status, 1000);
+            assert_eq!(snap.constellation, expected);
+        }
+    }
+
+    #[test]
+    fn snapshot_serializes_constellation_as_u8() {
+        let line = "Status,,46,0,1,2,1575420030,25.70,192.285,31.194557,1,1,1,22.1";
+        let status = StatusRecord::parse(line).unwrap();
+        let snap = SatelliteSnapshot::from_status(&status, 1000);
+
+        let json = serde_json::to_string(&snap).unwrap();
+        // constellation should be 1 (GPS), not "Gps"
+        assert!(
+            json.contains("\"constellation\":1"),
+            "expected u8 serialization, got: {json}"
+        );
     }
 }

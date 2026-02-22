@@ -1,5 +1,74 @@
 use crate::error::ParseError;
 use crate::parser::line::Record;
+use crate::record::status::StatusRecord;
+
+/// Single-record timestamp tracker for Status timestamp inference.
+///
+/// Tracks the most recent timestamp from any record and fills in missing
+/// Status timestamps. Use this when processing records one-by-one
+/// (e.g., in a streaming parser without iterators).
+///
+/// # Example
+/// ```
+/// use trajix::parser::time_context::TimestampInferer;
+/// use trajix::parser::line::Record;
+///
+/// let mut inferer = TimestampInferer::new();
+/// // inferer.annotate(&mut record) tracks timestamp and fills Status gaps
+/// ```
+pub struct TimestampInferer {
+    last_timestamp_ms: Option<i64>,
+}
+
+impl TimestampInferer {
+    /// Create a new timestamp inferer.
+    pub fn new() -> Self {
+        Self {
+            last_timestamp_ms: None,
+        }
+    }
+
+    /// Track a record's timestamp. Returns the timestamp if present.
+    pub fn track(&mut self, record: &Record) -> Option<i64> {
+        let ts = record.timestamp_ms();
+        if let Some(t) = ts {
+            self.last_timestamp_ms = Some(t);
+        }
+        ts
+    }
+
+    /// Fill missing Status timestamp from tracked state.
+    pub fn infer_status(&self, status: &mut StatusRecord) {
+        if status.unix_time_ms.is_none() {
+            status.unix_time_ms = self.last_timestamp_ms;
+        }
+    }
+
+    /// Track timestamp and infer missing Status timestamp in one call.
+    pub fn annotate(&mut self, record: &mut Record) {
+        // Track timestamp from any record
+        if let Some(ts) = record.timestamp_ms() {
+            self.last_timestamp_ms = Some(ts);
+        }
+        // Fill missing Status timestamps
+        if let Record::Status(s) = record
+            && s.unix_time_ms.is_none()
+        {
+            s.unix_time_ms = self.last_timestamp_ms;
+        }
+    }
+
+    /// The most recently observed timestamp (milliseconds).
+    pub fn last_timestamp_ms(&self) -> Option<i64> {
+        self.last_timestamp_ms
+    }
+}
+
+impl Default for TimestampInferer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// Iterator adapter that infers timestamps for Status records.
 ///
@@ -10,20 +79,20 @@ use crate::parser::line::Record;
 /// Records that already have timestamps are passed through unchanged.
 pub struct TimeAnnotator<I> {
     inner: I,
-    last_timestamp_ms: Option<i64>,
+    inferer: TimestampInferer,
 }
 
 impl<I> TimeAnnotator<I> {
     pub fn new(inner: I) -> Self {
         TimeAnnotator {
             inner,
-            last_timestamp_ms: None,
+            inferer: TimestampInferer::new(),
         }
     }
 
     /// The most recently observed timestamp (milliseconds).
     pub fn last_timestamp_ms(&self) -> Option<i64> {
-        self.last_timestamp_ms
+        self.inferer.last_timestamp_ms()
     }
 }
 
@@ -36,21 +105,8 @@ where
     fn next(&mut self) -> Option<Self::Item> {
         let item = self.inner.next()?;
         match item {
-            Ok(record) => {
-                // Update tracked timestamp from any record that has one
-                if let Some(ts) = record.timestamp_ms() {
-                    self.last_timestamp_ms = Some(ts);
-                }
-
-                // Fill in missing Status timestamps
-                let record = match record {
-                    Record::Status(mut s) if s.unix_time_ms.is_none() => {
-                        s.unix_time_ms = self.last_timestamp_ms;
-                        Record::Status(s)
-                    }
-                    other => other,
-                };
-
+            Ok(mut record) => {
+                self.inferer.annotate(&mut record);
                 Some(Ok(record))
             }
             Err(e) => Some(Err(e)),
@@ -222,6 +278,87 @@ Status,,37,1,3,9,1600875010,28.40,10.0,45.0,1,1,1,21.0";
                 assert_eq!(s.unix_time_ms, Some(1771641934000));
             }
             _ => panic!("expected Status"),
+        }
+    }
+
+    // ── TimestampInferer tests ──
+
+    #[test]
+    fn inferer_tracks_fix_timestamp() {
+        let mut inferer = TimestampInferer::new();
+        assert!(inferer.last_timestamp_ms().is_none());
+
+        let records = parse_lines(
+            "Fix,GPS,36.212,140.097,281.3,0.0,3.79,,1771641748000,0.07,,2091905471128467,3.66,0,,,",
+        );
+        let record = records[0].as_ref().unwrap();
+        let ts = inferer.track(record);
+        assert_eq!(ts, Some(1771641748000));
+        assert_eq!(inferer.last_timestamp_ms(), Some(1771641748000));
+    }
+
+    #[test]
+    fn inferer_infers_status() {
+        let mut inferer = TimestampInferer::new();
+        // Track a Fix timestamp
+        let records = parse_lines(
+            "Fix,GPS,36.212,140.097,281.3,0.0,3.79,,1771641748000,0.07,,2091905471128467,3.66,0,,,",
+        );
+        inferer.track(records[0].as_ref().unwrap());
+
+        // Status with no timestamp
+        let status_records =
+            parse_lines("Status,,46,0,1,2,1575420030,25.70,192.285,31.194557,1,1,1,22.1");
+        if let Ok(Record::Status(mut s)) = status_records.into_iter().next().unwrap() {
+            assert!(s.unix_time_ms.is_none());
+            inferer.infer_status(&mut s);
+            assert_eq!(s.unix_time_ms, Some(1771641748000));
+        } else {
+            panic!("expected Status");
+        }
+    }
+
+    #[test]
+    fn inferer_preserves_existing_status() {
+        let mut inferer = TimestampInferer::new();
+        let records = parse_lines(
+            "Fix,GPS,36.212,140.097,281.3,0.0,3.79,,1771641748000,0.07,,2091905471128467,3.66,0,,,",
+        );
+        inferer.track(records[0].as_ref().unwrap());
+
+        let status_records = parse_lines(
+            "Status,1771641934000,37,0,1,2,1575420030,25.70,192.285,31.194557,1,1,1,22.1",
+        );
+        if let Ok(Record::Status(mut s)) = status_records.into_iter().next().unwrap() {
+            assert_eq!(s.unix_time_ms, Some(1771641934000));
+            inferer.infer_status(&mut s);
+            // Should NOT overwrite existing timestamp
+            assert_eq!(s.unix_time_ms, Some(1771641934000));
+        } else {
+            panic!("expected Status");
+        }
+    }
+
+    #[test]
+    fn inferer_annotate_combined() {
+        let mut inferer = TimestampInferer::new();
+
+        // Feed a Fix (track timestamp)
+        let mut fix = parse_lines(
+            "Fix,GPS,36.212,140.097,281.3,0.0,3.79,,1771641748000,0.07,,2091905471128467,3.66,0,,,",
+        ).into_iter().next().unwrap().unwrap();
+        inferer.annotate(&mut fix);
+        assert_eq!(inferer.last_timestamp_ms(), Some(1771641748000));
+
+        // Feed a Status with no timestamp (should be inferred)
+        let mut status = parse_lines(
+            "Status,,46,0,1,2,1575420030,25.70,192.285,31.194557,1,1,1,22.1",
+        ).into_iter().next().unwrap().unwrap();
+        inferer.annotate(&mut status);
+        if let Record::Status(s) = &status {
+            assert_eq!(s.unix_time_ms, Some(1771641748000));
+        } else {
+            panic!("expected Status");
         }
     }
 

@@ -57,6 +57,22 @@ impl ConstellationType {
     }
 }
 
+/// Serialize `ConstellationType` as its u8 value (for compact JSON/binary output).
+pub fn serialize_constellation_u8<S: serde::Serializer>(
+    ct: &ConstellationType,
+    s: S,
+) -> Result<S::Ok, S::Error> {
+    s.serialize_u8(ct.as_u8())
+}
+
+/// Deserialize `ConstellationType` from its u8 value.
+pub fn deserialize_constellation_u8<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<ConstellationType, D::Error> {
+    let v = u8::deserialize(d)?;
+    Ok(ConstellationType::from_u8(v))
+}
+
 impl std::fmt::Display for ConstellationType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {

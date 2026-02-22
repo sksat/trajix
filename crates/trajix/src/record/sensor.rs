@@ -27,6 +27,15 @@ pub struct UncalibratedSensorRecord {
 }
 
 impl UncalibratedSensorRecord {
+    /// Returns bias-corrected (x, y, z) values.
+    pub fn unbiased(&self) -> (f64, f64, f64) {
+        (
+            self.x - self.bias_x,
+            self.y - self.bias_y,
+            self.z - self.bias_z,
+        )
+    }
+
     /// Parse an uncalibrated sensor record (UncalAccel, UncalGyro, or UncalMag).
     pub fn parse(line: &str, record_type: &'static str) -> Result<Self, ParseError> {
         let fields: Vec<&str> = line.split(',').collect();
@@ -261,5 +270,39 @@ mod tests {
     fn parse_game_rotation_wrong_field_count() {
         let result = GameRotationVectorRecord::parse("GameRotationVector,123");
         assert!(result.is_err());
+    }
+
+    // ── unbiased() tests ──
+
+    fn make_uncal(x: f64, y: f64, z: f64, bx: f64, by: f64, bz: f64) -> UncalibratedSensorRecord {
+        UncalibratedSensorRecord {
+            utc_time_ms: 0,
+            elapsed_realtime_ns: 0,
+            x,
+            y,
+            z,
+            bias_x: bx,
+            bias_y: by,
+            bias_z: bz,
+            calibration_accuracy: 3,
+        }
+    }
+
+    #[test]
+    fn unbiased_zero_bias() {
+        let r = make_uncal(1.0, 2.0, 3.0, 0.0, 0.0, 0.0);
+        assert_eq!(r.unbiased(), (1.0, 2.0, 3.0));
+    }
+
+    #[test]
+    fn unbiased_with_bias() {
+        let r = make_uncal(10.0, 20.0, 30.0, 1.0, 2.0, 3.0);
+        assert_eq!(r.unbiased(), (9.0, 18.0, 27.0));
+    }
+
+    #[test]
+    fn unbiased_negative_bias() {
+        let r = make_uncal(5.0, 5.0, 5.0, -1.0, -2.0, -3.0);
+        assert_eq!(r.unbiased(), (6.0, 7.0, 8.0));
     }
 }
