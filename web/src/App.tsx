@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type * as Cesium from "cesium";
 import { useGnssData } from "./hooks/useGnssData";
 import { useDuckDB } from "./hooks/useDuckDB";
@@ -10,6 +10,12 @@ import { PlaybackControls } from "./components/PlaybackControls";
 import { TimeSeriesPanel } from "./components/TimeSeries";
 import { SkyPlot } from "./components/SkyPlot";
 import type { ProcessingResult } from "./types/gnss";
+import {
+  isMobile as checkIsMobile,
+  initialSidebarState,
+  desktopToggle,
+  mobileToggle,
+} from "./layout/sidebarState";
 import "./App.css";
 
 function CollapsibleSection({
@@ -43,8 +49,17 @@ export default function App() {
   const [viewer, setViewer] = useState<Cesium.Viewer | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(
-    () => window.innerWidth < 768,
+    () => initialSidebarState(window.innerWidth).collapsed,
   );
+  const [isMobile, setIsMobile] = useState(() =>
+    checkIsMobile(window.innerWidth),
+  );
+
+  useEffect(() => {
+    const onResize = () => setIsMobile(checkIsMobile(window.innerWidth));
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
 
   const { currentTimeMs, seekTo } = useAnimationTime(viewer);
 
@@ -102,7 +117,11 @@ export default function App() {
             <div className={`sidebar-wrapper ${sidebarCollapsed ? "collapsed" : ""}`}>
               <button
                 className="sidebar-collapse-toggle"
-                onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+                onClick={() => {
+                  const next = desktopToggle({ open: sidebarOpen, collapsed: sidebarCollapsed });
+                  setSidebarCollapsed(next.collapsed);
+                  setSidebarOpen(next.open);
+                }}
                 aria-label={
                   sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"
                 }
@@ -118,7 +137,11 @@ export default function App() {
               <aside className={`sidebar ${sidebarOpen ? "expanded" : ""}`}>
                 <button
                   className="sidebar-toggle"
-                  onClick={() => setSidebarOpen(!sidebarOpen)}
+                  onClick={() => {
+                    const next = mobileToggle({ open: sidebarOpen, collapsed: sidebarCollapsed });
+                    setSidebarOpen(next.open);
+                    setSidebarCollapsed(next.collapsed);
+                  }}
                   aria-label={
                     sidebarOpen ? "Collapse sidebar" : "Expand sidebar"
                   }
@@ -166,17 +189,29 @@ export default function App() {
                         <FixQualitySummary result={state.result} />
                       </div>
                     </CollapsibleSection>
+                    {isMobile && (
+                      <CollapsibleSection title="Charts" defaultOpen={false}>
+                        <TimeSeriesPanel
+                          statusEpochs={state.result.status_epochs}
+                          fixEpochs={state.result.fix_epochs}
+                          currentTimeMs={currentTimeMs}
+                          onSeek={seekTo}
+                        />
+                      </CollapsibleSection>
+                    )}
                   </div>
                 )}
               </aside>
             </div>
           </div>
-          <TimeSeriesPanel
-            statusEpochs={state.result.status_epochs}
-            fixEpochs={state.result.fix_epochs}
-            currentTimeMs={currentTimeMs}
-            onSeek={seekTo}
-          />
+          {!isMobile && (
+            <TimeSeriesPanel
+              statusEpochs={state.result.status_epochs}
+              fixEpochs={state.result.fix_epochs}
+              currentTimeMs={currentTimeMs}
+              onSeek={seekTo}
+            />
+          )}
         </div>
       )}
     </div>

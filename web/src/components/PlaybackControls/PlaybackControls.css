@@ -126,7 +126,7 @@
 /* Mobile adjustments */
 @media (max-width: 767px) {
   .playback-controls {
-    bottom: var(--space-2);
+    bottom: 44px; /* Clear the 36px sidebar peek + gap */
     padding: var(--space-1) var(--space-2);
     gap: var(--space-1);
     max-width: calc(100vw - var(--space-4));
