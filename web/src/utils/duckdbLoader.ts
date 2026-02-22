@@ -68,7 +68,7 @@ async function loadFixes(
 ): Promise<void> {
   if (result.fixes.length === 0) return;
 
-  const rows = result.fixes.map((f, i) => mapFixRow(f, result.fix_qualities[i]));
+  const rows = result.fixes.map((f, i) => mapFixRow(f, result.fix_qualities[i] ?? "Primary"));
 
   await insertJsonArray(db, conn, "fix", rows);
 }

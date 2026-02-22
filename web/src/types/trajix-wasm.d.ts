@@ -37,4 +37,10 @@ declare module "trajix-wasm" {
     cn0_dbhz: number;
     used_in_fix: boolean;
   }
+
+  /** Decimated sample (moved to trajix core, no tsify). */
+  interface DecimatedSample<V> {
+    time_ms: number;
+    value: V;
+  }
 }
