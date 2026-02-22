@@ -21,7 +21,8 @@ export function geodeticBearing(
   lonB: number,
   latB: number,
 ): number {
-  const dLon = lonB - lonA;
+  // Normalize dLon to [-π, π] to handle antimeridian crossings
+  const dLon = Math.atan2(Math.sin(lonB - lonA), Math.cos(lonB - lonA));
   return Math.atan2(
     Math.sin(dLon) * Math.cos(latB),
     Math.cos(latA) * Math.sin(latB) -
@@ -223,24 +224,90 @@ export function estimateFrameSpeed(
   return Math.sqrt(dX * dX + dY * dY);
 }
 
+// ────────────────────────────────────────────
+// Viewport-aware visibility
+// ────────────────────────────────────────────
+
 /**
- * Compute target camera range from per-frame speed.
- * Faster movement → wider view (zoom out).
+ * Compute the narrower FOV axis for a perspective camera.
+ * Landscape (aspect ≥ 1): vertical FOV is narrower.
+ * Portrait (aspect < 1): horizontal FOV is narrower.
+ * Injectable for responsive testing.
+ */
+export function computeNarrowFov(
+  verticalFov: number,
+  aspectRatio: number,
+): number {
+  if (aspectRatio >= 1) return verticalFov;
+  return 2 * Math.atan(aspectRatio * Math.tan(verticalFov / 2));
+}
+
+/**
+ * Compute steady-state lag distance (meters) for an EMA position smoother.
+ * When an entity moves at constant velocity v per frame with EMA factor α,
+ * the smoothed position lags by v/α meters at steady state.
+ */
+export function computeLagDistance(
+  speedPerFrame: number,
+  lerpFactor: number,
+): number {
+  if (lerpFactor <= 0 || lerpFactor >= 1 || speedPerFrame <= 0) return 0;
+  return speedPerFrame / lerpFactor;
+}
+
+/**
+ * Compute minimum camera range to keep a point at `lagDistance` meters
+ * from the camera center within the viewport.
+ *
+ * Model: angular subtense of lag from camera ≈ lag / range.
+ * For visibility: lag / range < sin(fov * margin / 2).
+ * So: range > lag / sin(fov * margin / 2).
+ *
+ * Parameters injectable for responsive/viewport testing.
+ */
+export function computeVisibilityRange(
+  lagDistance: number,
+  opts?: {
+    fovRadians?: number;
+    marginFraction?: number;
+  },
+): number {
+  if (lagDistance <= 0) return 0;
+  const fov = opts?.fovRadians ?? Math.PI / 3;
+  const margin = opts?.marginFraction ?? 0.7;
+  const halfAngle = (fov * margin) / 2;
+  return lagDistance / Math.sin(halfAngle);
+}
+
+/**
+ * Compute target camera range from speed and viewport parameters.
+ * Uses visibility-aware calculation: range must be large enough that
+ * the EMA-smoothed lag keeps the entity within the viewport.
  */
 export function computeTargetRange(
   speedMpf: number,
   opts?: {
     baseRange?: number;
-    speedScale?: number;
     minRange?: number;
     maxRange?: number;
+    lerpFactor?: number;
+    fovRadians?: number;
+    marginFraction?: number;
   },
 ): number {
   const base = opts?.baseRange ?? 200;
-  const scale = opts?.speedScale ?? 50;
   const min = opts?.minRange ?? 200;
-  const max = opts?.maxRange ?? 3000;
-  return Math.max(min, Math.min(max, base + speedMpf * scale));
+  const max = opts?.maxRange ?? 100_000;
+  const lerpFactor = opts?.lerpFactor ?? 0.08;
+  const fov = opts?.fovRadians ?? Math.PI / 3;
+  const margin = opts?.marginFraction ?? 0.7;
+
+  const lag = computeLagDistance(speedMpf, lerpFactor);
+  const visRange = computeVisibilityRange(lag, {
+    fovRadians: fov,
+    marginFraction: margin,
+  });
+  return Math.max(min, Math.min(max, Math.max(base, visRange)));
 }
 
 /**
@@ -267,6 +334,12 @@ export interface TerrainCollisionResult {
 
 /**
  * Adjust pitch toward nadir when camera is too close to terrain.
+ *
+ * Uses a "hard floor" approach with gentle quadratic response:
+ * - Small clearance threshold (10m default) to allow near-horizontal views
+ * - Quadratic deficit for smooth response near the threshold
+ * - minPitch capped at -85° to avoid gimbal lock at nadir
+ *
  * Returns the new pitch and whether it was adjusted.
  */
 export function adjustPitchForTerrain(
@@ -279,17 +352,18 @@ export function adjustPitchForTerrain(
     minPitch?: number;
   },
 ): TerrainCollisionResult {
-  const minAlt = options?.minAltitude ?? 50;
-  const adjustSpeed = options?.adjustSpeed ?? 0.03;
-  const minPitch = options?.minPitch ?? -Math.PI * 89 / 180;
+  const minAlt = options?.minAltitude ?? 10;
+  const adjustSpeed = options?.adjustSpeed ?? 0.005;
+  const minPitch = options?.minPitch ?? -Math.PI * 85 / 180;
 
   const camAlt = cameraAltitude - terrainHeight;
   if (camAlt >= minAlt) {
     return { pitch: currentPitch, adjusted: false };
   }
 
-  const deficit = (minAlt - camAlt) / minAlt;
-  let newPitch = currentPitch - adjustSpeed * Math.min(1, deficit);
+  const deficit = Math.min(1, (minAlt - camAlt) / minAlt);
+  // Quadratic response: gentle near threshold, stronger when deeply underground
+  let newPitch = currentPitch - adjustSpeed * deficit * deficit;
   newPitch = Math.max(newPitch, minPitch);
   return { pitch: newPitch, adjusted: true };
 }

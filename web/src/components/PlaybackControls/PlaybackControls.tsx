@@ -5,9 +5,12 @@ import {
   createBearingTracker,
   updateBearing,
   resetBearing,
+  angleDiff,
   autoHeading,
   detectUserDrag,
   estimateFrameSpeed,
+  computeNarrowFov,
+  computeVisibilityRange,
   computeTargetRange,
   lerpRange,
   adjustPitchForTerrain,
@@ -241,6 +244,10 @@ export function PlaybackControls({ viewer }: PlaybackControlsProps) {
         prevTargetLon = null;
         prevTargetLat = null;
         speedMpf = 0;
+        // Sync headingOffset with user's heading chosen during pause
+        if (bearing.hasBearing) {
+          headingOffset = angleDiff(heading, bearing.bearing);
+        }
       }
       wasAnimating = isAnimating;
 
@@ -278,29 +285,48 @@ export function PlaybackControls({ viewer }: PlaybackControlsProps) {
         }
       }
 
-      // Bearing update (only when animating — prevents drift while paused)
-      if (isAnimating) {
-        updateBearing(bearing, smoothed.longitude, smoothed.latitude);
+      // Bearing update from RAW positions (not smoothed) — reduces turn lag.
+      // Only when animating and moving fast enough to have reliable bearing.
+      const MIN_SPEED_FOR_BEARING = 0.5; // m/frame (~30m/s at 60fps)
+      if (isAnimating && speedMpf > MIN_SPEED_FOR_BEARING) {
+        updateBearing(bearing, target.longitude, target.latitude);
       }
 
-      // Read user-adjusted HPR (always — allows drag/zoom while paused)
+      // User interaction handling.
+      // When PAUSED: read heading/pitch/range directly from camera (safe —
+      // center isn't moving, so no feedback loop).
+      // When ANIMATING: use drag detection to avoid feedback loops from
+      // the smoothed center moving between frames at high playback speed.
       if (initialized) {
-        const drag = detectUserDrag(
-          viewer.camera.heading,
-          lastSetHeading,
-          headingOffset,
-        );
-        headingOffset = drag.headingOffset;
+        if (!isAnimating) {
+          // Paused — full camera control (drag to rotate, scroll to zoom)
+          heading = viewer.camera.heading;
+          pitch = viewer.camera.pitch;
+          const centerCart = Cesium.Cartesian3.fromRadians(
+            smoothed.longitude,
+            smoothed.latitude,
+            smoothed.height,
+          );
+          range = Cesium.Cartesian3.distance(
+            viewer.camera.positionWC,
+            centerCart,
+          );
+        } else {
+          // Animating — detect heading drag to accumulate offset
+          const drag = detectUserDrag(
+            viewer.camera.heading,
+            lastSetHeading,
+            headingOffset,
+            0.03,
+          );
+          headingOffset = drag.headingOffset;
 
-        heading = viewer.camera.heading;
-        pitch = viewer.camera.pitch;
-        const camPos = viewer.camera.positionWC;
-        const center = Cesium.Cartesian3.fromRadians(
-          smoothed.longitude,
-          smoothed.latitude,
-          smoothed.height,
-        );
-        range = Cesium.Cartesian3.distance(camPos, center);
+          // Also detect user pitch changes (middle-drag)
+          const camPitch = viewer.camera.pitch;
+          if (Math.abs(camPitch - pitch) > 0.03) {
+            pitch = camPitch;
+          }
+        }
       }
 
       // Auto-heading + LOS + range adaptation (only when animating)
@@ -349,12 +375,34 @@ export function PlaybackControls({ viewer }: PlaybackControlsProps) {
           heading += dir * LOS_NUDGE_SPEED;
         }
 
-        // Speed-adaptive range
-        const rangeTarget = computeTargetRange(speedMpf);
+        // Viewport-aware range: compute narrow FOV for visibility
+        const frustum = viewer.camera.frustum as Cesium.PerspectiveFrustum;
+        const narrowFov = computeNarrowFov(
+          frustum.fov ?? Math.PI / 3,
+          frustum.aspectRatio ?? 16 / 9,
+        );
+
+        // Speed-adaptive target range (smooth lerp toward expected steady-state)
+        const rangeTarget = computeTargetRange(speedMpf, {
+          lerpFactor: H_LERP,
+          fovRadians: narrowFov,
+        });
         range = lerpRange(range, rangeTarget);
+
+        // Hard floor: actual lag-based minimum to prevent off-screen entity
+        const actualLag = estimateFrameSpeed(
+          smoothed.longitude,
+          smoothed.latitude,
+          target.longitude,
+          target.latitude,
+        );
+        const visMin = computeVisibilityRange(actualLag, {
+          fovRadians: narrowFov,
+        });
+        range = Math.max(range, visMin);
       }
 
-      // Terrain collision (always — prevent camera underground)
+      // Apply camera with single lookAt
       const center = Cesium.Cartesian3.fromRadians(
         smoothed.longitude,
         smoothed.latitude,
@@ -364,6 +412,8 @@ export function PlaybackControls({ viewer }: PlaybackControlsProps) {
         center,
         new Cesium.HeadingPitchRange(heading, pitch, range),
       );
+
+      // Terrain collision — adjust pitch if camera is underground
       const camCarto = Cesium.Cartographic.fromCartesian(
         viewer.camera.positionWC,
       );
@@ -375,14 +425,16 @@ export function PlaybackControls({ viewer }: PlaybackControlsProps) {
             camCarto.height,
             terrainH,
           );
-          pitch = result.pitch;
+          if (result.adjusted) {
+            pitch = result.pitch;
+            // Re-apply only if terrain collision adjusted pitch
+            viewer.camera.lookAt(
+              center,
+              new Cesium.HeadingPitchRange(heading, pitch, range),
+            );
+          }
         }
       }
-
-      viewer.camera.lookAt(
-        center,
-        new Cesium.HeadingPitchRange(heading, pitch, range),
-      );
       lastSetHeading = heading;
       initialized = true;
     };

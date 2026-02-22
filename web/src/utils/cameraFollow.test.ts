@@ -8,6 +8,9 @@ import {
   autoHeading,
   detectUserDrag,
   estimateFrameSpeed,
+  computeNarrowFov,
+  computeLagDistance,
+  computeVisibilityRange,
   computeTargetRange,
   lerpRange,
   adjustPitchForTerrain,
@@ -47,6 +50,18 @@ describe("geodeticBearing", () => {
     // Small displacement northeast from equator
     const b = geodeticBearing(0, 0, toRad(0.01), toRad(0.01));
     expect(b).toBeCloseTo(Math.PI / 4, 1);
+  });
+
+  it("handles antimeridian crossing eastward (179°E → -179°W)", () => {
+    const b = geodeticBearing(toRad(179), toRad(35), toRad(-179), toRad(35));
+    // Moving east across antimeridian → bearing ≈ π/2
+    expect(b).toBeCloseTo(Math.PI / 2, 0);
+  });
+
+  it("handles antimeridian crossing westward (-179°W → 179°E)", () => {
+    const b = geodeticBearing(toRad(-179), toRad(35), toRad(179), toRad(35));
+    // Moving west across antimeridian → bearing ≈ -π/2
+    expect(b).toBeCloseTo(-Math.PI / 2, 0);
   });
 });
 
@@ -228,6 +243,58 @@ describe("autoHeading", () => {
     const h = autoHeading(1.0, 2.0, 0, toRad(-56), { lerpFactor: 0 });
     expect(h).toBeCloseTo(1.0);
   });
+
+  // ── Multi-frame convergence direction tests ──
+
+  it("converges in correct direction for right turn (north→east)", () => {
+    // Simulate 100 frames of heading converging toward east (π/2)
+    let heading = 0; // facing north
+    const travelBearing = Math.PI / 2; // travel east
+    const opts = { lerpFactor: 0.05 };
+    for (let i = 0; i < 100; i++) {
+      heading = autoHeading(heading, travelBearing, 0, toRad(-56), opts);
+    }
+    // Should converge close to π/2, not diverge or go opposite
+    expect(heading).toBeGreaterThan(Math.PI / 4);
+    expect(heading).toBeLessThan(Math.PI); // not overshoot
+  });
+
+  it("converges in correct direction for left turn (north→west)", () => {
+    let heading = 0;
+    const travelBearing = -Math.PI / 2; // travel west
+    const opts = { lerpFactor: 0.05 };
+    for (let i = 0; i < 100; i++) {
+      heading = autoHeading(heading, travelBearing, 0, toRad(-56), opts);
+    }
+    // Should converge toward -π/2 (west)
+    expect(heading).toBeLessThan(-Math.PI / 4);
+    expect(heading).toBeGreaterThan(-Math.PI);
+  });
+
+  it("converges correctly for U-turn (north→south)", () => {
+    let heading = 0;
+    const travelBearing = Math.PI; // travel south
+    const opts = { lerpFactor: 0.05 };
+    for (let i = 0; i < 200; i++) {
+      heading = autoHeading(heading, travelBearing, 0, toRad(-56), opts);
+    }
+    // Should converge to ±π (south)
+    expect(Math.abs(heading)).toBeGreaterThan(Math.PI * 0.8);
+  });
+
+  it("converges when starting from CesiumJS-range heading (5.5 rad → north)", () => {
+    // CesiumJS returns heading in [0, 2π). Test with heading near 2π (≈north).
+    let heading = 5.5; // ≈315° (NW)
+    const travelBearing = 0; // travel north
+    const opts = { lerpFactor: 0.05 };
+    for (let i = 0; i < 100; i++) {
+      heading = autoHeading(heading, travelBearing, 0, toRad(-56), opts);
+    }
+    // Should converge toward 0 (or 2π)
+    // angleDiff(0, 5.5) ≈ 0.78, so heading should increase toward 2π/0
+    const wrapped = Math.atan2(Math.sin(heading), Math.cos(heading));
+    expect(Math.abs(wrapped)).toBeLessThan(0.3);
+  });
 });
 
 // ────────────────────────────────────────────
@@ -312,7 +379,163 @@ describe("estimateFrameSpeed", () => {
 });
 
 // ────────────────────────────────────────────
-// computeTargetRange
+// computeNarrowFov
+// ────────────────────────────────────────────
+
+describe("computeNarrowFov", () => {
+  it("returns vertical FOV for landscape (aspect ≥ 1)", () => {
+    const vfov = Math.PI / 3; // 60°
+    expect(computeNarrowFov(vfov, 16 / 9)).toBe(vfov);
+    expect(computeNarrowFov(vfov, 1)).toBe(vfov);
+  });
+
+  it("returns narrower horizontal FOV for portrait", () => {
+    const vfov = Math.PI / 3;
+    const narrow = computeNarrowFov(vfov, 0.5);
+    // hfov = 2*atan(0.5 * tan(30°)) ≈ 32.2°
+    expect(narrow).toBeLessThan(vfov);
+    expect(narrow).toBeCloseTo(
+      2 * Math.atan(0.5 * Math.tan(vfov / 2)),
+      5,
+    );
+  });
+
+  it("portrait 9:16 gives narrower FOV than landscape 16:9", () => {
+    const vfov = Math.PI / 3;
+    const landscape = computeNarrowFov(vfov, 16 / 9);
+    const portrait = computeNarrowFov(vfov, 9 / 16);
+    expect(portrait).toBeLessThan(landscape);
+  });
+
+  it("square aspect returns vertical FOV", () => {
+    const vfov = Math.PI / 3;
+    expect(computeNarrowFov(vfov, 1)).toBe(vfov);
+  });
+
+  it("very narrow portrait (phone held upright)", () => {
+    const vfov = Math.PI / 3;
+    const narrow = computeNarrowFov(vfov, 9 / 21); // ~0.43
+    expect(narrow).toBeLessThan(Math.PI / 6); // less than 30°
+  });
+});
+
+// ────────────────────────────────────────────
+// computeLagDistance
+// ────────────────────────────────────────────
+
+describe("computeLagDistance", () => {
+  it("returns 0 for zero speed", () => {
+    expect(computeLagDistance(0, 0.08)).toBe(0);
+  });
+
+  it("returns 0 for invalid lerp factor", () => {
+    expect(computeLagDistance(10, 0)).toBe(0);
+    expect(computeLagDistance(10, 1)).toBe(0);
+    expect(computeLagDistance(10, -0.1)).toBe(0);
+  });
+
+  it("computes speed / lerpFactor", () => {
+    expect(computeLagDistance(100, 0.1)).toBe(1000);
+    expect(computeLagDistance(200, 0.08)).toBe(2500);
+  });
+
+  it("higher lerp → less lag", () => {
+    const lag1 = computeLagDistance(100, 0.05);
+    const lag2 = computeLagDistance(100, 0.2);
+    expect(lag2).toBeLessThan(lag1);
+  });
+
+  it("airplane at 50x: lag = 2600m", () => {
+    // 250 m/s × 50x / 60fps ≈ 208 m/frame, lerp=0.08
+    const lag = computeLagDistance(208, 0.08);
+    expect(lag).toBe(2600);
+  });
+
+  it("walking at 50x: lag = 15m", () => {
+    // 5 km/h × 50x / 60fps ≈ 1.2 m/frame
+    const lag = computeLagDistance(1.2, 0.08);
+    expect(lag).toBe(15);
+  });
+});
+
+// ────────────────────────────────────────────
+// computeVisibilityRange
+// ────────────────────────────────────────────
+
+describe("computeVisibilityRange", () => {
+  it("returns 0 for zero lag", () => {
+    expect(computeVisibilityRange(0)).toBe(0);
+  });
+
+  it("returns range where lag fits within FOV margin", () => {
+    const lag = 1000;
+    const fov = Math.PI / 3;
+    const margin = 0.7;
+    const range = computeVisibilityRange(lag, {
+      fovRadians: fov,
+      marginFraction: margin,
+    });
+    // Verify: at this range, lag/range === sin(fov * margin / 2)
+    const halfAngle = (fov * margin) / 2;
+    expect(lag / range).toBeCloseTo(Math.sin(halfAngle), 5);
+  });
+
+  it("wider FOV → smaller range needed", () => {
+    const lag = 1000;
+    const narrow = computeVisibilityRange(lag, { fovRadians: Math.PI / 6 });
+    const wide = computeVisibilityRange(lag, { fovRadians: Math.PI / 2 });
+    expect(wide).toBeLessThan(narrow);
+  });
+
+  it("larger margin → smaller range (entity can be closer to edge)", () => {
+    const lag = 1000;
+    const tight = computeVisibilityRange(lag, { marginFraction: 0.5 });
+    const loose = computeVisibilityRange(lag, { marginFraction: 0.9 });
+    expect(loose).toBeLessThan(tight);
+  });
+
+  it("airplane at 50x: range ≈ 7.3km", () => {
+    const lag = 2600; // 208 m/frame / 0.08
+    const range = computeVisibilityRange(lag);
+    expect(range).toBeGreaterThan(6000);
+    expect(range).toBeLessThan(9000);
+  });
+
+  it("walking at 50x: range ≈ 42m (below baseRange)", () => {
+    const lag = 15;
+    const range = computeVisibilityRange(lag);
+    expect(range).toBeLessThan(50);
+  });
+
+  it("entity within viewport at computed range (parameterized)", () => {
+    const fov = Math.PI / 3;
+    const margin = 0.7;
+    for (const lag of [10, 100, 1000, 5000, 10000]) {
+      const range = computeVisibilityRange(lag, {
+        fovRadians: fov,
+        marginFraction: margin,
+      });
+      const halfAngle = (fov * margin) / 2;
+      expect(lag / range).toBeLessThanOrEqual(Math.sin(halfAngle) + 1e-10);
+    }
+  });
+
+  it("portrait viewport needs larger range", () => {
+    const lag = 1000;
+    const landscapeRange = computeVisibilityRange(lag, {
+      fovRadians: Math.PI / 3,
+    });
+    // Portrait: 9:16, narrower horizontal FOV
+    const portraitFov = 2 * Math.atan((9 / 16) * Math.tan(Math.PI / 6));
+    const portraitRange = computeVisibilityRange(lag, {
+      fovRadians: portraitFov,
+    });
+    expect(portraitRange).toBeGreaterThan(landscapeRange);
+  });
+});
+
+// ────────────────────────────────────────────
+// computeTargetRange (visibility-aware)
 // ────────────────────────────────────────────
 
 describe("computeTargetRange", () => {
@@ -321,33 +544,50 @@ describe("computeTargetRange", () => {
   });
 
   it("returns minRange when result would be below", () => {
-    expect(computeTargetRange(-10)).toBe(200);
+    expect(computeTargetRange(0, { minRange: 300 })).toBe(300);
   });
 
-  it("scales with speed", () => {
-    // Walking at 50x: ~1.2 m/frame → 200 + 1.2*50 = 260
-    expect(computeTargetRange(1.2)).toBeCloseTo(260);
+  it("walking speed stays at baseRange", () => {
+    // 1.2 m/frame → lag=15m → visRange≈42m < baseRange(200)
+    const r = computeTargetRange(1.2);
+    expect(r).toBe(200);
+  });
+
+  it("driving speed zooms out", () => {
+    // 11.6 m/frame → lag=145m → visRange≈405m
+    const r = computeTargetRange(11.6);
+    expect(r).toBeGreaterThan(350);
+    expect(r).toBeLessThan(500);
+  });
+
+  it("airplane speed zooms out significantly", () => {
+    // 208 m/frame → lag=2600m → visRange≈7263m
+    const r = computeTargetRange(208);
+    expect(r).toBeGreaterThan(6000);
+    expect(r).toBeLessThan(9000);
   });
 
   it("caps at maxRange", () => {
-    expect(computeTargetRange(1000)).toBe(3000);
+    expect(computeTargetRange(1000, { maxRange: 5000 })).toBe(5000);
   });
 
-  it("reasonable range for driving at 50x", () => {
-    // 50 km/h × 50x / 60fps = 11.6 m/frame → 200 + 11.6*50 = 780
-    const r = computeTargetRange(11.6);
-    expect(r).toBeGreaterThan(700);
-    expect(r).toBeLessThan(900);
+  it("narrower FOV requires larger range", () => {
+    const wide = computeTargetRange(100, { fovRadians: Math.PI / 2 });
+    const narrow = computeTargetRange(100, { fovRadians: Math.PI / 6 });
+    expect(narrow).toBeGreaterThan(wide);
   });
 
-  it("respects custom options", () => {
-    const r = computeTargetRange(10, {
-      baseRange: 100,
-      speedScale: 100,
-      minRange: 100,
-      maxRange: 5000,
-    });
-    expect(r).toBeCloseTo(1100);
+  it("higher lerp factor reduces required range", () => {
+    const slow = computeTargetRange(100, { lerpFactor: 0.05 });
+    const fast = computeTargetRange(100, { lerpFactor: 0.2 });
+    expect(fast).toBeLessThan(slow);
+  });
+
+  it("portrait viewport requires larger range", () => {
+    const portraitFov = 2 * Math.atan((9 / 16) * Math.tan(Math.PI / 6));
+    const r = computeTargetRange(100, { fovRadians: portraitFov });
+    const rDefault = computeTargetRange(100);
+    expect(r).toBeGreaterThan(rDefault);
   });
 });
 
@@ -388,53 +628,445 @@ describe("lerpRange", () => {
 });
 
 // ────────────────────────────────────────────
+// Follow simulation — end-to-end visibility
+// ────────────────────────────────────────────
+
+describe("follow simulation — visibility", () => {
+  // Generate straight-line track at constant speed
+  function generateTrack(
+    speedMs: number,
+    durationSec: number,
+    startLon: number,
+    startLat: number,
+    heading: number,
+  ): Array<{ lon: number; lat: number; timeMs: number }> {
+    const R = 6371000;
+    const positions: Array<{ lon: number; lat: number; timeMs: number }> = [];
+    for (let t = 0; t <= durationSec; t++) {
+      const dist = speedMs * t;
+      const lon =
+        startLon + (dist * Math.sin(heading)) / (R * Math.cos(startLat));
+      const lat = startLat + (dist * Math.cos(heading)) / R;
+      positions.push({ lon, lat, timeMs: t * 1000 });
+    }
+    return positions;
+  }
+
+  // Interpolate position at a given simulation time
+  function interpAt(
+    positions: Array<{ lon: number; lat: number; timeMs: number }>,
+    timeMs: number,
+  ): { lon: number; lat: number } {
+    if (timeMs <= positions[0].timeMs) return positions[0];
+    const last = positions[positions.length - 1];
+    if (timeMs >= last.timeMs) return last;
+
+    let lo = 0;
+    let hi = positions.length - 1;
+    while (hi - lo > 1) {
+      const mid = (lo + hi) >> 1;
+      if (positions[mid].timeMs <= timeMs) lo = mid;
+      else hi = mid;
+    }
+    const a = positions[lo];
+    const b = positions[hi];
+    const t = (timeMs - a.timeMs) / (b.timeMs - a.timeMs);
+    return {
+      lon: a.lon + (b.lon - a.lon) * t,
+      lat: a.lat + (b.lat - a.lat) * t,
+    };
+  }
+
+  // Simulate camera follow loop: EMA smoothing + visibility-based range
+  function simulateFollow(
+    positions: Array<{ lon: number; lat: number; timeMs: number }>,
+    config: {
+      playbackSpeed: number;
+      fps: number;
+      hLerp: number;
+      fovRadians: number;
+      marginFraction: number;
+    },
+  ) {
+    const { playbackSpeed, fps, hLerp, fovRadians, marginFraction } = config;
+    const frameDurationMs = (playbackSpeed * 1000) / fps;
+
+    let smoothedLon = positions[0].lon;
+    let smoothedLat = positions[0].lat;
+    let range = 200;
+    let totalFrames = 0;
+    let offScreenFrames = 0;
+    let maxLag = 0;
+    let maxRange = 0;
+
+    const startMs = positions[0].timeMs;
+    const endMs = positions[positions.length - 1].timeMs;
+
+    for (let simMs = startMs; simMs <= endMs; simMs += frameDurationMs) {
+      const target = interpAt(positions, simMs);
+
+      // EMA smoothing
+      smoothedLon += (target.lon - smoothedLon) * hLerp;
+      smoothedLat += (target.lat - smoothedLat) * hLerp;
+
+      // Actual lag in meters
+      const lag = estimateFrameSpeed(
+        smoothedLon,
+        smoothedLat,
+        target.lon,
+        target.lat,
+      );
+      if (lag > maxLag) maxLag = lag;
+
+      // Visibility-based range with hard floor
+      const visMin = computeVisibilityRange(lag, {
+        fovRadians,
+        marginFraction,
+      });
+      const rangeTarget = Math.max(200, visMin);
+      range = lerpRange(range, rangeTarget);
+      range = Math.max(range, visMin); // hard floor
+      if (range > maxRange) maxRange = range;
+
+      // Check visibility: is entity within FOV?
+      const halfFov = fovRadians / 2;
+      if (range > 0 && lag / range > Math.sin(halfFov)) {
+        offScreenFrames++;
+      }
+      totalFrames++;
+    }
+    return { totalFrames, offScreenFrames, maxLag, maxRange };
+  }
+
+  const defaultConfig = {
+    playbackSpeed: 50,
+    fps: 60,
+    hLerp: 0.08,
+    fovRadians: Math.PI / 3,
+    marginFraction: 0.7,
+  };
+
+  it("airplane at 50x: zero off-screen frames", () => {
+    const track = generateTrack(
+      250, 300, toRad(139), toRad(40), toRad(190),
+    );
+    const result = simulateFollow(track, defaultConfig);
+    expect(result.offScreenFrames).toBe(0);
+    expect(result.totalFrames).toBeGreaterThan(100);
+    expect(result.maxLag).toBeGreaterThan(1000);
+    expect(result.maxRange).toBeGreaterThan(5000);
+  });
+
+  it("walking at 50x: all on screen, small range", () => {
+    const track = generateTrack(
+      1.4, 300, toRad(139), toRad(35), toRad(45),
+    );
+    const result = simulateFollow(track, defaultConfig);
+    expect(result.offScreenFrames).toBe(0);
+    expect(result.maxRange).toBeLessThan(500);
+  });
+
+  it("driving at 50x: all on screen", () => {
+    const track = generateTrack(
+      13.9, 300, toRad(139), toRad(35), toRad(90),
+    );
+    const result = simulateFollow(track, defaultConfig);
+    expect(result.offScreenFrames).toBe(0);
+  });
+
+  it("airplane at 100x: all on screen", () => {
+    const track = generateTrack(
+      250, 300, toRad(139), toRad(40), toRad(190),
+    );
+    const result = simulateFollow(track, {
+      ...defaultConfig,
+      playbackSpeed: 100,
+    });
+    expect(result.offScreenFrames).toBe(0);
+    expect(result.maxRange).toBeGreaterThan(10000);
+  });
+
+  it("portrait viewport: larger range needed, still on screen", () => {
+    const portraitFov = 2 * Math.atan((9 / 16) * Math.tan(Math.PI / 6));
+    const track = generateTrack(
+      250, 300, toRad(139), toRad(40), toRad(190),
+    );
+    const portraitResult = simulateFollow(track, {
+      ...defaultConfig,
+      fovRadians: portraitFov,
+    });
+    const landscapeResult = simulateFollow(track, defaultConfig);
+    expect(portraitResult.offScreenFrames).toBe(0);
+    expect(portraitResult.maxRange).toBeGreaterThan(landscapeResult.maxRange);
+  });
+
+  it("sudden speed change: walk → airplane, all on screen", () => {
+    const walk = generateTrack(
+      1.4, 60, toRad(139), toRad(35), toRad(0),
+    );
+    const lastWalk = walk[walk.length - 1];
+    const fly = generateTrack(250, 240, lastWalk.lon, lastWalk.lat, toRad(190));
+    const combined = [
+      ...walk,
+      ...fly.slice(1).map((p) => ({ ...p, timeMs: p.timeMs + 60000 })),
+    ];
+    const result = simulateFollow(combined, defaultConfig);
+    expect(result.offScreenFrames).toBe(0);
+  });
+
+  it("range converges at constant speed", () => {
+    const track = generateTrack(
+      250, 600, toRad(139), toRad(40), toRad(190),
+    );
+    const result = simulateFollow(track, defaultConfig);
+    // After 600s, range should have stabilized
+    // Verify range is within reasonable bounds for 250 m/s at 50x
+    const expectedLag = computeLagDistance(250 * 50 / 60, 0.08);
+    const expectedRange = computeVisibilityRange(expectedLag, {
+      fovRadians: Math.PI / 3,
+      marginFraction: 0.7,
+    });
+    expect(result.maxRange).toBeGreaterThan(expectedRange * 0.8);
+    expect(result.maxRange).toBeLessThan(expectedRange * 1.5);
+  });
+});
+
+// ────────────────────────────────────────────
+// Real flight data simulation (Chitose→Tsukuba cruise)
+// ────────────────────────────────────────────
+
+describe("real flight data — visibility", () => {
+  // Load 300 GPS/FLP fix records from airplane cruising phase
+  // (~200 m/s, Hokkaido region, lat 42.5→42.1, ~176 seconds)
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const cruiseFixes: Array<{
+    timeMs: number;
+    lat: number;
+    lon: number;
+    speed: number;
+  }> = require("./__fixtures__/cruise_fixes.json");
+
+  // Convert degrees to radians for simulation
+  const track = cruiseFixes.map((f) => ({
+    lon: toRad(f.lon),
+    lat: toRad(f.lat),
+    timeMs: f.timeMs,
+  }));
+
+  // Reuse simulation infrastructure from above
+  function interpAt(
+    positions: Array<{ lon: number; lat: number; timeMs: number }>,
+    timeMs: number,
+  ): { lon: number; lat: number } {
+    if (timeMs <= positions[0].timeMs) return positions[0];
+    const last = positions[positions.length - 1];
+    if (timeMs >= last.timeMs) return last;
+    let lo = 0;
+    let hi = positions.length - 1;
+    while (hi - lo > 1) {
+      const mid = (lo + hi) >> 1;
+      if (positions[mid].timeMs <= timeMs) lo = mid;
+      else hi = mid;
+    }
+    const a = positions[lo];
+    const b = positions[hi];
+    const t = (timeMs - a.timeMs) / (b.timeMs - a.timeMs);
+    return {
+      lon: a.lon + (b.lon - a.lon) * t,
+      lat: a.lat + (b.lat - a.lat) * t,
+    };
+  }
+
+  function simReal(config: {
+    playbackSpeed: number;
+    fps: number;
+    hLerp: number;
+    fovRadians: number;
+    marginFraction: number;
+  }) {
+    const { playbackSpeed, fps, hLerp, fovRadians, marginFraction } = config;
+    const frameDurationMs = (playbackSpeed * 1000) / fps;
+    let smoothedLon = track[0].lon;
+    let smoothedLat = track[0].lat;
+    let range = 200;
+    let totalFrames = 0;
+    let offScreenFrames = 0;
+    let maxLag = 0;
+    let maxRange = 0;
+    const startMs = track[0].timeMs;
+    const endMs = track[track.length - 1].timeMs;
+
+    for (let simMs = startMs; simMs <= endMs; simMs += frameDurationMs) {
+      const target = interpAt(track, simMs);
+      smoothedLon += (target.lon - smoothedLon) * hLerp;
+      smoothedLat += (target.lat - smoothedLat) * hLerp;
+      const lag = estimateFrameSpeed(
+        smoothedLon, smoothedLat, target.lon, target.lat,
+      );
+      if (lag > maxLag) maxLag = lag;
+      const visMin = computeVisibilityRange(lag, { fovRadians, marginFraction });
+      const rangeTarget = Math.max(200, visMin);
+      range = lerpRange(range, rangeTarget);
+      range = Math.max(range, visMin);
+      if (range > maxRange) maxRange = range;
+      const halfFov = fovRadians / 2;
+      if (range > 0 && lag / range > Math.sin(halfFov)) {
+        offScreenFrames++;
+      }
+      totalFrames++;
+    }
+    return { totalFrames, offScreenFrames, maxLag, maxRange };
+  }
+
+  it("loads fixture data correctly", () => {
+    expect(cruiseFixes.length).toBe(300);
+    expect(cruiseFixes[0].speed).toBeGreaterThan(200);
+    expect(cruiseFixes[0].lat).toBeGreaterThan(42);
+    expect(cruiseFixes[0].lon).toBeCloseTo(141.77, 0);
+  });
+
+  it("50x playback: zero off-screen frames", () => {
+    const result = simReal({
+      playbackSpeed: 50,
+      fps: 60,
+      hLerp: 0.08,
+      fovRadians: Math.PI / 3,
+      marginFraction: 0.7,
+    });
+    expect(result.offScreenFrames).toBe(0);
+    expect(result.totalFrames).toBeGreaterThan(100);
+    // Airplane at ~210 m/s, 50x → ~175 m/frame
+    expect(result.maxLag).toBeGreaterThan(500);
+    expect(result.maxRange).toBeGreaterThan(3000);
+  });
+
+  it("100x playback: zero off-screen frames", () => {
+    const result = simReal({
+      playbackSpeed: 100,
+      fps: 60,
+      hLerp: 0.08,
+      fovRadians: Math.PI / 3,
+      marginFraction: 0.7,
+    });
+    expect(result.offScreenFrames).toBe(0);
+    expect(result.maxRange).toBeGreaterThan(result.maxLag);
+  });
+
+  it("portrait phone (9:16): zero off-screen frames", () => {
+    const portraitFov = computeNarrowFov(Math.PI / 3, 9 / 16);
+    const result = simReal({
+      playbackSpeed: 50,
+      fps: 60,
+      hLerp: 0.08,
+      fovRadians: portraitFov,
+      marginFraction: 0.7,
+    });
+    expect(result.offScreenFrames).toBe(0);
+  });
+
+  it("500x playback: zero off-screen frames", () => {
+    const result = simReal({
+      playbackSpeed: 500,
+      fps: 60,
+      hLerp: 0.08,
+      fovRadians: Math.PI / 3,
+      marginFraction: 0.7,
+    });
+    expect(result.offScreenFrames).toBe(0);
+  });
+});
+
+// ────────────────────────────────────────────
 // adjustPitchForTerrain
 // ────────────────────────────────────────────
 
 describe("adjustPitchForTerrain", () => {
-  it("no adjustment when camera is above minimum", () => {
+  // ── Default behavior (gentle, airplane-friendly) ──
+
+  it("no adjustment when camera is well above terrain", () => {
+    // 100m AGL > 10m default threshold
     const r = adjustPitchForTerrain(toRad(-56), 200, 100);
     expect(r.adjusted).toBe(false);
     expect(r.pitch).toBe(toRad(-56));
   });
 
-  it("no adjustment when exactly at minimum", () => {
-    const r = adjustPitchForTerrain(toRad(-56), 150, 100);
+  it("no adjustment at 30m AGL (above default 10m threshold)", () => {
+    // 30m AGL should be fine — allows near-horizontal viewing near mountains
+    const r = adjustPitchForTerrain(toRad(-20), 130, 100);
     expect(r.adjusted).toBe(false);
+    expect(r.pitch).toBe(toRad(-20));
   });
 
-  it("adjusts pitch when camera is below minimum altitude", () => {
-    const r = adjustPitchForTerrain(toRad(-56), 130, 100);
+  it("adjusts when camera is within 10m of terrain", () => {
+    // 5m AGL < 10m default threshold → adjust
+    const r = adjustPitchForTerrain(toRad(-30), 105, 100);
     expect(r.adjusted).toBe(true);
-    expect(r.pitch).toBeLessThan(toRad(-56)); // more negative = more top-down
+    expect(r.pitch).toBeLessThan(toRad(-30));
   });
 
-  it("adjusts more aggressively when closer to terrain", () => {
-    const r1 = adjustPitchForTerrain(toRad(-56), 140, 100); // 40m, deficit=0.2
-    const r2 = adjustPitchForTerrain(toRad(-56), 110, 100); // 10m, deficit=0.8
-
-    expect(r2.pitch).toBeLessThan(r1.pitch); // more adjustment when closer
-  });
-
-  it("clamps at minimum pitch", () => {
-    // Camera way below terrain — large deficit
-    const r = adjustPitchForTerrain(toRad(-88), 50, 100);
+  it("gentle adjustment: less than 0.5° per frame at mild deficit", () => {
+    // 8m AGL → deficit = (10-8)/10 = 0.2, squared = 0.04
+    const r = adjustPitchForTerrain(toRad(-30), 108, 100);
     expect(r.adjusted).toBe(true);
-    expect(r.pitch).toBeGreaterThanOrEqual(toRad(-89));
+    const changeDeg = Math.abs(r.pitch - toRad(-30)) * 180 / Math.PI;
+    expect(changeDeg).toBeLessThan(0.5);
   });
 
-  it("respects custom options", () => {
+  it("stronger adjustment when deeper underground", () => {
+    const r1 = adjustPitchForTerrain(toRad(-30), 108, 100); // 8m AGL
+    const r2 = adjustPitchForTerrain(toRad(-30), 101, 100); // 1m AGL
+    expect(r2.pitch).toBeLessThan(r1.pitch);
+  });
+
+  it("preserves near-horizontal pitch when above threshold", () => {
+    // Even at -10° pitch (very horizontal), no adjustment if above terrain
+    const r = adjustPitchForTerrain(toRad(-10), 120, 100);
+    expect(r.adjusted).toBe(false);
+    expect(r.pitch).toBe(toRad(-10));
+  });
+
+  it("never pushes pitch beyond -85° (avoids gimbal lock)", () => {
+    // Camera underground — extreme deficit
+    const r = adjustPitchForTerrain(toRad(-84), 50, 100);
+    expect(r.adjusted).toBe(true);
+    expect(r.pitch).toBeGreaterThanOrEqual(toRad(-85));
+  });
+
+  it("handles underground camera", () => {
+    const r = adjustPitchForTerrain(toRad(-56), 80, 100);
+    expect(r.adjusted).toBe(true);
+    expect(r.pitch).toBeLessThan(toRad(-56));
+  });
+
+  // ── Explicit options (backwards-compatible) ──
+
+  it("adjusts with custom minAltitude=50 (old behavior)", () => {
+    // 30m AGL < 50m → adjusts
+    const r = adjustPitchForTerrain(toRad(-56), 130, 100, { minAltitude: 50 });
+    expect(r.adjusted).toBe(true);
+    expect(r.pitch).toBeLessThan(toRad(-56));
+  });
+
+  it("respects custom minAltitude", () => {
     const r = adjustPitchForTerrain(toRad(-56), 130, 100, {
       minAltitude: 20, // camera at 30m > 20m → no adjustment
     });
     expect(r.adjusted).toBe(false);
   });
 
-  it("handles negative camera altitude (underground)", () => {
-    const r = adjustPitchForTerrain(toRad(-56), 80, 100); // 20m below terrain
-    expect(r.adjusted).toBe(true);
-    // deficit = (50 - (-20)) / 50 = 1.4 → clamped to min(1, 1.4) = 1
-    expect(r.pitch).toBeLessThan(toRad(-56));
+  it("adjusts more aggressively with custom adjustSpeed", () => {
+    const gentle = adjustPitchForTerrain(toRad(-56), 105, 100);
+    const aggressive = adjustPitchForTerrain(toRad(-56), 105, 100, {
+      adjustSpeed: 0.03,
+    });
+    expect(aggressive.pitch).toBeLessThan(gentle.pitch);
+  });
+
+  it("respects custom minPitch", () => {
+    const r = adjustPitchForTerrain(toRad(-88), 50, 100, {
+      minPitch: -Math.PI * 89 / 180,
+    });
+    expect(r.pitch).toBeGreaterThanOrEqual(toRad(-89));
   });
 });
 
