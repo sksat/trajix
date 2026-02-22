@@ -72,7 +72,7 @@ export function SkyPlot({ snapshots, currentTimeMs }: SkyPlotProps) {
           cx={CENTER}
           cy={CENTER}
           r={RADIUS}
-          fill="#0a0a1a"
+          fill="rgba(15, 15, 26, 0.6)"
           stroke="#2a2a4a"
           strokeWidth={1}
         />

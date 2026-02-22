@@ -538,7 +538,7 @@ body {
     box-shadow: var(--shadow-md);
     padding-top: 0;
     transform: translateY(calc(100% - 36px));
-    transition: transform var(--transition-normal);
+    transition: transform 400ms ease;
   }
 
   .sidebar.expanded {

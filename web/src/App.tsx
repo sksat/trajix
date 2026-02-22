@@ -114,6 +114,10 @@ export default function App() {
                 imagery={imagery}
                 onViewerReady={handleViewerReady}
               />
+              <SkyPlot
+                snapshots={state.result.satellite_snapshots ?? []}
+                currentTimeMs={currentTimeMs}
+              />
               <PlaybackControls viewer={viewer} />
             </div>
             <div className={`sidebar-wrapper ${sidebarCollapsed ? "collapsed" : ""}`}>
@@ -154,12 +158,6 @@ export default function App() {
                   <div className="sidebar-content">
                     <CollapsibleSection title="Summary">
                       <ResultSummary result={state.result} />
-                    </CollapsibleSection>
-                    <CollapsibleSection title="Sky Plot">
-                      <SkyPlot
-                        snapshots={state.result.satellite_snapshots ?? []}
-                        currentTimeMs={currentTimeMs}
-                      />
                     </CollapsibleSection>
                     <CollapsibleSection title="Layers">
                       <div className="layer-controls">

@@ -1,12 +1,14 @@
 .sky-plot {
-  padding: var(--space-2);
+  position: absolute;
+  top: var(--space-3);
+  right: var(--space-3);
+  z-index: 10;
+  pointer-events: none;
 }
 
 .sky-plot svg {
   display: block;
-  margin: 0 auto;
-  width: 100%;
-  max-width: 200px;
+  width: 160px;
   height: auto;
 }
 
@@ -46,8 +48,13 @@
   display: inline-block;
 }
 
-@media (max-width: 767px) {
+@media (max-width: 767px), (orientation: portrait) {
+  .sky-plot {
+    top: var(--space-2);
+    right: var(--space-2);
+  }
+
   .sky-plot svg {
-    max-width: 160px;
+    width: 120px;
   }
 }
