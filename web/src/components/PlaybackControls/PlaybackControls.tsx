@@ -234,6 +234,47 @@ export function PlaybackControls({ viewer }: PlaybackControlsProps) {
     let range = 360;
     let initialized = false;
 
+    // Expose setters for demo recording.
+    // Frame-counter approach: override camera-read for N frames, then auto-clear.
+    // This behaves like a user drag — one-time nudge, then Follow resumes naturally.
+    let pitchHoldFrames = 0;
+    let headingHoldFrames = 0;
+    let pitchAnimating = false;
+    let pitchAnimFrame = 0;
+    const SETTLE_FRAMES = 2; // frames to hold after set (lookAt applies → camera settles)
+    (window as unknown as Record<string, unknown>).__setFollowPitch = (deg: number) => {
+      pitch = Cesium.Math.toRadians(deg);
+      pitchHoldFrames = SETTLE_FRAMES;
+    };
+    (window as unknown as Record<string, unknown>).__setFollowHeading = (deg: number) => {
+      heading = Cesium.Math.toRadians(deg);
+      headingHoldFrames = SETTLE_FRAMES;
+    };
+    // Smooth animated pitch change (easeInOut), auto-clears after settle
+    (window as unknown as Record<string, unknown>).__animateFollowPitch = (
+      targetDeg: number,
+      durationMs = 2000,
+    ) => {
+      if (pitchAnimFrame) cancelAnimationFrame(pitchAnimFrame);
+      const startPitch = pitch;
+      const endPitch = Cesium.Math.toRadians(targetDeg);
+      const startTime = performance.now();
+      pitchAnimating = true;
+      const step = () => {
+        const t = Math.min((performance.now() - startTime) / durationMs, 1);
+        const ease = t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2;
+        pitch = startPitch + (endPitch - startPitch) * ease;
+        if (t < 1) {
+          pitchAnimFrame = requestAnimationFrame(step);
+        } else {
+          pitchAnimFrame = 0;
+          pitchAnimating = false;
+          pitchHoldFrames = SETTLE_FRAMES; // settle then release
+        }
+      };
+      pitchAnimFrame = requestAnimationFrame(step);
+    };
+
     // Bearing tracker (adaptive EMA)
     const bearing = createBearingTracker();
 
@@ -319,8 +360,8 @@ export function PlaybackControls({ viewer }: PlaybackControlsProps) {
       if (initialized) {
         if (!isAnimating) {
           // Paused — full camera control (drag to rotate, scroll to zoom)
-          heading = viewer.camera.heading;
-          pitch = viewer.camera.pitch;
+          if (headingHoldFrames > 0) { headingHoldFrames--; } else { heading = viewer.camera.heading; }
+          if (pitchAnimating || pitchHoldFrames > 0) { if (pitchHoldFrames > 0) pitchHoldFrames--; } else { pitch = viewer.camera.pitch; }
           const centerCart = Cesium.Cartesian3.fromRadians(
             smoothed.longitude,
             smoothed.latitude,

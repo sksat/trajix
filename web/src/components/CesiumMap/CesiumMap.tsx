@@ -88,6 +88,8 @@ export function CesiumMap({
     viewer.scene.globe.depthTestAgainstTerrain = true;
 
     viewerRef.current = viewer;
+    // Expose viewer globally for debugging/demo recording
+    (window as unknown as Record<string, unknown>).__cesiumViewer = viewer;
     onViewerReady?.(viewer);
 
     return () => {
