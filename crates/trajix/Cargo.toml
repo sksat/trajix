@@ -10,5 +10,6 @@ repository = "https://github.com/sksat/trajix"
 readme = "../../README.md"
 
 [dependencies]
+nalgebra = "0.34"
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"

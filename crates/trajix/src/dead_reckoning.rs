@@ -14,6 +14,8 @@
 //! DR activates when GNSS accuracy exceeds a configurable threshold and
 //! deactivates when a good GNSS fix arrives.
 
+use nalgebra::{Quaternion, UnitQuaternion, Vector3};
+
 use crate::parser::line::Record;
 use crate::record::fix::FixRecord;
 use crate::record::sensor::{GameRotationVectorRecord, UncalibratedSensorRecord};
@@ -23,113 +25,6 @@ const GRAVITY_MS2: f64 = 9.80665;
 
 /// Meters per degree of latitude (approximate, WGS84 mean).
 const METERS_PER_DEG_LAT: f64 = 111_132.0;
-
-// ────────────────────────────────────────────
-// Vec3
-// ────────────────────────────────────────────
-
-/// 3D vector (internal use only).
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct Vec3 {
-    pub(crate) x: f64,
-    pub(crate) y: f64,
-    pub(crate) z: f64,
-}
-
-impl Vec3 {
-    pub(crate) fn new(x: f64, y: f64, z: f64) -> Self {
-        Self { x, y, z }
-    }
-
-    pub(crate) fn zero() -> Self {
-        Self {
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        }
-    }
-
-    pub(crate) fn magnitude(self) -> f64 {
-        (self.x * self.x + self.y * self.y + self.z * self.z).sqrt()
-    }
-}
-
-impl std::ops::Add for Vec3 {
-    type Output = Self;
-    fn add(self, rhs: Self) -> Self {
-        Self::new(self.x + rhs.x, self.y + rhs.y, self.z + rhs.z)
-    }
-}
-
-impl std::ops::Sub for Vec3 {
-    type Output = Self;
-    fn sub(self, rhs: Self) -> Self {
-        Self::new(self.x - rhs.x, self.y - rhs.y, self.z - rhs.z)
-    }
-}
-
-impl std::ops::Mul<f64> for Vec3 {
-    type Output = Self;
-    fn mul(self, rhs: f64) -> Self {
-        Self::new(self.x * rhs, self.y * rhs, self.z * rhs)
-    }
-}
-
-fn cross(a: Vec3, b: Vec3) -> Vec3 {
-    Vec3::new(
-        a.y * b.z - a.z * b.y,
-        a.z * b.x - a.x * b.z,
-        a.x * b.y - a.y * b.x,
-    )
-}
-
-// ────────────────────────────────────────────
-// Quaternion
-// ────────────────────────────────────────────
-
-/// Unit quaternion (Hamilton convention: q = w + xi + yj + zk).
-///
-/// Follows Android `GameRotationVector` convention:
-/// the quaternion rotates ENU (world) → device frame.
-/// Use `q.conjugate().rotate(v_device)` to get `v_enu`.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct Quat {
-    pub(crate) x: f64,
-    pub(crate) y: f64,
-    pub(crate) z: f64,
-    pub(crate) w: f64,
-}
-
-impl Quat {
-    pub(crate) fn new(x: f64, y: f64, z: f64, w: f64) -> Self {
-        Self { x, y, z, w }
-    }
-
-    #[allow(dead_code)] // Used in tests only
-    pub(crate) fn identity() -> Self {
-        Self {
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-            w: 1.0,
-        }
-    }
-
-    /// Conjugate (= inverse for unit quaternions).
-    pub(crate) fn conjugate(self) -> Self {
-        Self::new(-self.x, -self.y, -self.z, self.w)
-    }
-
-    /// Rotate vector v: v' = q v q*.
-    ///
-    /// Optimized formula: v' = v + 2w(u × v) + 2(u × (u × v))
-    /// where u = (x, y, z) is the vector part of q.
-    pub(crate) fn rotate(self, v: Vec3) -> Vec3 {
-        let u = Vec3::new(self.x, self.y, self.z);
-        let t = cross(u, v) * 2.0;
-        v + t * self.w + cross(u, t)
-    }
-}
 
 // ────────────────────────────────────────────
 // Dead Reckoning types
@@ -195,8 +90,8 @@ struct GnssAnchor {
 
 struct DrState {
     time_ms: i64,
-    pos_enu: Vec3,
-    vel_enu: Vec3,
+    pos_enu: Vector3<f64>,
+    vel_enu: Vector3<f64>,
     anchor_lat_deg: f64,
     anchor_lon_deg: f64,
     anchor_alt_m: f64,
@@ -215,7 +110,7 @@ pub struct DeadReckoning {
     config: DrConfig,
     last_fix: Option<GnssAnchor>,
     state: Option<DrState>,
-    attitude: Option<Quat>,
+    attitude: Option<UnitQuaternion<f64>>,
     trajectory: Vec<DrPoint>,
 }
 
@@ -279,7 +174,7 @@ impl DeadReckoning {
                     let vel = velocity_from_anchor(anchor);
                     self.state = Some(DrState {
                         time_ms: fix.unix_time_ms,
-                        pos_enu: Vec3::zero(),
+                        pos_enu: Vector3::zeros(),
                         vel_enu: vel,
                         anchor_lat_deg: anchor.lat_deg,
                         anchor_lon_deg: anchor.lon_deg,
@@ -294,7 +189,9 @@ impl DeadReckoning {
 
     /// Update attitude from a GameRotationVector reading.
     pub fn push_attitude(&mut self, grv: &GameRotationVectorRecord) {
-        self.attitude = Some(Quat::new(grv.x, grv.y, grv.z, grv.w));
+        self.attitude = Some(UnitQuaternion::new_normalize(Quaternion::new(
+            grv.w, grv.x, grv.y, grv.z,
+        )));
     }
 
     /// Process an uncalibrated accelerometer reading.
@@ -324,33 +221,33 @@ impl DeadReckoning {
         }
         if dt_s > self.config.max_dt_s {
             // Large gap: reset velocity, don't integrate
-            state.vel_enu = Vec3::zero();
+            state.vel_enu = Vector3::zeros();
             state.time_ms = accel.utc_time_ms;
             return None;
         }
 
         // Calibrated acceleration in device frame
-        let a_device = Vec3::new(
+        let a_device = Vector3::new(
             accel.x - accel.bias_x,
             accel.y - accel.bias_y,
             accel.z - accel.bias_z,
         );
 
         // Rotate device → ENU using conjugate of Android quaternion
-        let a_world = attitude.conjugate().rotate(a_device);
+        let a_world = attitude.conjugate().transform_vector(&a_device);
 
         // Remove gravity (accelerometer reads +g on Z when stationary)
-        let a_linear = Vec3::new(a_world.x, a_world.y, a_world.z - GRAVITY_MS2);
+        let a_linear = Vector3::new(a_world.x, a_world.y, a_world.z - GRAVITY_MS2);
 
         // Euler integration
-        state.vel_enu = state.vel_enu + a_linear * dt_s;
+        state.vel_enu += a_linear * dt_s;
 
         // ZUPT: zero velocity if magnitude below threshold
-        if state.vel_enu.magnitude() < self.config.zupt_speed_threshold_mps {
-            state.vel_enu = Vec3::zero();
+        if state.vel_enu.norm() < self.config.zupt_speed_threshold_mps {
+            state.vel_enu = Vector3::zeros();
         }
 
-        state.pos_enu = state.pos_enu + state.vel_enu * dt_s;
+        state.pos_enu += state.vel_enu * dt_s;
         state.time_ms = accel.utc_time_ms;
 
         // Convert to lat/lon and emit
@@ -391,24 +288,24 @@ fn meters_per_deg_lon(lat_deg: f64) -> f64 {
     METERS_PER_DEG_LAT * lat_deg.to_radians().cos()
 }
 
-fn enu_to_latlon(pos_enu: Vec3, anchor_lat: f64, anchor_lon: f64) -> (f64, f64) {
+fn enu_to_latlon(pos_enu: Vector3<f64>, anchor_lat: f64, anchor_lon: f64) -> (f64, f64) {
     let lat = anchor_lat + pos_enu.y / METERS_PER_DEG_LAT;
     let lon = anchor_lon + pos_enu.x / meters_per_deg_lon(anchor_lat);
     (lat, lon)
 }
 
 /// Initialize velocity from GNSS speed and bearing.
-fn velocity_from_anchor(anchor: &GnssAnchor) -> Vec3 {
+fn velocity_from_anchor(anchor: &GnssAnchor) -> Vector3<f64> {
     match (anchor.speed_mps, anchor.bearing_deg) {
         (Some(speed), Some(bearing)) if speed > 0.0 => {
             let rad = bearing.to_radians();
-            Vec3::new(
+            Vector3::new(
                 speed * rad.sin(), // East
                 speed * rad.cos(), // North
                 0.0,
             )
         }
-        _ => Vec3::zero(),
+        _ => Vector3::zeros(),
     }
 }
 
@@ -421,38 +318,17 @@ mod tests {
         (a - b).abs() < tol
     }
 
-    // ── Vec3 ──
-
-    #[test]
-    fn vec3_magnitude() {
-        assert!(approx_eq(Vec3::new(3.0, 4.0, 0.0).magnitude(), 5.0, 1e-10));
-        assert!(approx_eq(Vec3::zero().magnitude(), 0.0, 1e-10));
+    /// Helper: create a UnitQuaternion from Android (x, y, z, w) convention.
+    fn quat(x: f64, y: f64, z: f64, w: f64) -> UnitQuaternion<f64> {
+        UnitQuaternion::new_normalize(Quaternion::new(w, x, y, z))
     }
 
-    #[test]
-    fn vec3_ops() {
-        let a = Vec3::new(1.0, 2.0, 3.0);
-        let b = Vec3::new(4.0, 5.0, 6.0);
-
-        let sum = a + b;
-        assert!(approx_eq(sum.x, 5.0, 1e-10));
-        assert!(approx_eq(sum.y, 7.0, 1e-10));
-        assert!(approx_eq(sum.z, 9.0, 1e-10));
-
-        let diff = a - b;
-        assert!(approx_eq(diff.x, -3.0, 1e-10));
-
-        let scaled = a * 2.0;
-        assert!(approx_eq(scaled.x, 2.0, 1e-10));
-        assert!(approx_eq(scaled.y, 4.0, 1e-10));
-    }
-
-    // ── Quaternion ──
+    // ── Quaternion convention ──
 
     #[test]
     fn quat_identity_preserves_vector() {
-        let v = Vec3::new(1.0, 2.0, 3.0);
-        let result = Quat::identity().rotate(v);
+        let v = Vector3::new(1.0, 2.0, 3.0);
+        let result = UnitQuaternion::identity().transform_vector(&v);
         assert!(approx_eq(result.x, 1.0, 1e-10));
         assert!(approx_eq(result.y, 2.0, 1e-10));
         assert!(approx_eq(result.z, 3.0, 1e-10));
@@ -463,9 +339,9 @@ mod tests {
         // 90° around Z: x=East(1,0,0) → y=North(0,1,0)
         let s = std::f64::consts::FRAC_PI_4.sin();
         let c = std::f64::consts::FRAC_PI_4.cos();
-        let q = Quat::new(0.0, 0.0, s, c);
+        let q = quat(0.0, 0.0, s, c);
 
-        let result = q.rotate(Vec3::new(1.0, 0.0, 0.0));
+        let result = q.transform_vector(&Vector3::new(1.0, 0.0, 0.0));
         assert!(approx_eq(result.x, 0.0, 1e-10));
         assert!(approx_eq(result.y, 1.0, 1e-10));
         assert!(approx_eq(result.z, 0.0, 1e-10));
@@ -475,10 +351,10 @@ mod tests {
     fn quat_conjugate_is_inverse() {
         let s = std::f64::consts::FRAC_PI_4.sin();
         let c = std::f64::consts::FRAC_PI_4.cos();
-        let q = Quat::new(0.0, 0.0, s, c);
+        let q = quat(0.0, 0.0, s, c);
 
-        let v = Vec3::new(1.0, 2.0, 3.0);
-        let back = q.conjugate().rotate(q.rotate(v));
+        let v = Vector3::new(1.0, 2.0, 3.0);
+        let back = q.conjugate().transform_vector(&q.transform_vector(&v));
         assert!(approx_eq(back.x, v.x, 1e-10));
         assert!(approx_eq(back.y, v.y, 1e-10));
         assert!(approx_eq(back.z, v.z, 1e-10));
@@ -488,8 +364,8 @@ mod tests {
     fn device_to_enu_flat() {
         // Phone flat, screen up, top north → identity quaternion
         // Accel reads (0, 0, +g) → ENU should be (0, 0, +g)
-        let q = Quat::identity();
-        let a_enu = q.conjugate().rotate(Vec3::new(0.0, 0.0, GRAVITY_MS2));
+        let q = UnitQuaternion::identity();
+        let a_enu = q.conjugate().transform_vector(&Vector3::new(0.0, 0.0, GRAVITY_MS2));
         assert!(approx_eq(a_enu.x, 0.0, 1e-10));
         assert!(approx_eq(a_enu.y, 0.0, 1e-10));
         assert!(approx_eq(a_enu.z, GRAVITY_MS2, 1e-10));
@@ -500,10 +376,10 @@ mod tests {
         // Phone upright, screen facing south, top up
         // ENU→device rotation: -90° around X
         let angle = -std::f64::consts::FRAC_PI_2;
-        let q = Quat::new((angle / 2.0).sin(), 0.0, 0.0, (angle / 2.0).cos());
+        let q = quat((angle / 2.0).sin(), 0.0, 0.0, (angle / 2.0).cos());
 
         // Device accel: (0, +g, 0) (gravity along top edge = Up)
-        let a_enu = q.conjugate().rotate(Vec3::new(0.0, GRAVITY_MS2, 0.0));
+        let a_enu = q.conjugate().transform_vector(&Vector3::new(0.0, GRAVITY_MS2, 0.0));
         assert!(approx_eq(a_enu.x, 0.0, 1e-10));
         assert!(approx_eq(a_enu.y, 0.0, 1e-10));
         assert!(approx_eq(a_enu.z, GRAVITY_MS2, 1e-10));
@@ -513,7 +389,7 @@ mod tests {
 
     #[test]
     fn enu_to_latlon_origin() {
-        let (lat, lon) = enu_to_latlon(Vec3::zero(), 36.0, 140.0);
+        let (lat, lon) = enu_to_latlon(Vector3::zeros(), 36.0, 140.0);
         assert!(approx_eq(lat, 36.0, 1e-10));
         assert!(approx_eq(lon, 140.0, 1e-10));
     }
@@ -521,7 +397,7 @@ mod tests {
     #[test]
     fn enu_to_latlon_north() {
         // 111.132m north → +0.001° latitude
-        let (lat, lon) = enu_to_latlon(Vec3::new(0.0, 111.132, 0.0), 36.0, 140.0);
+        let (lat, lon) = enu_to_latlon(Vector3::new(0.0, 111.132, 0.0), 36.0, 140.0);
         assert!(approx_eq(lat, 36.001, 1e-6));
         assert!(approx_eq(lon, 140.0, 1e-10));
     }
@@ -565,7 +441,7 @@ mod tests {
             speed_mps: None,
             bearing_deg: None,
         };
-        assert!(approx_eq(velocity_from_anchor(&anchor).magnitude(), 0.0, 1e-10));
+        assert!(approx_eq(velocity_from_anchor(&anchor).norm(), 0.0, 1e-10));
     }
 
     // ── DeadReckoning integration ──
