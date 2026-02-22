@@ -1,10 +1,20 @@
 # trajix
 
-GNSS/positioning data parser and analysis library.
+GNSS/positioning data visualization web app. Parses 1GB+ [Android GNSS Logger](https://play.google.com/store/apps/details?id=com.google.android.apps.location.gps.gnsslogger) log files in-browser via WASM, and visualizes flight trajectories on 3D maps with sky plots and time-series charts.
 
-Currently supports [Android GNSS Logger](https://play.google.com/store/apps/details?id=com.google.android.apps.location.gps.gnsslogger) CSV format, parsing Fix, Status, Raw, and IMU sensor records into strongly-typed Rust structs with streaming support for large (1GB+) files.
+https://github.com/user-attachments/assets/c2eea891-5479-4f58-992d-862c72e3b26c
 
-## Usage
+*Demo: Chitose → Narita flight (2025-11-29), 607MB log file parsed in ~10s*
+
+## Features
+
+- **In-browser WASM parser** — streams 1GB+ files without server upload
+- **3D flight visualization** — CesiumJS with GSI terrain tiles, camera follow mode
+- **Sky plot** — real-time satellite positions with constellation filtering
+- **Time-series charts** — CN0, satellite count, accuracy, speed (uPlot)
+- **DuckDB-wasm** — SQL queries on parsed data in-browser
+
+## Usage (Rust library)
 
 ```rust
 use std::fs::File;
