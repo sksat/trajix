@@ -9,38 +9,20 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  rust-fmt:
+  rust:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6.0.2
       - uses: dtolnay/rust-toolchain@v1
         with:
           toolchain: stable
-          components: rustfmt
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2.8.2
       - run: cargo fmt --check
-
-  rust-clippy:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6.0.2
-      - uses: dtolnay/rust-toolchain@v1
-        with:
-          toolchain: stable
-          components: clippy
-      - uses: Swatinem/rust-cache@v2.8.2
       - run: cargo clippy --workspace --all-targets -- -D warnings
-
-  rust-test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6.0.2
-      - uses: dtolnay/rust-toolchain@v1
-        with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@v2.8.2
       - run: cargo test --workspace
 
-  web-typecheck:
+  web:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6.0.2
@@ -72,24 +54,6 @@ jobs:
 
       - name: TypeCheck
         run: pnpm exec tsc -b --noEmit
-        working-directory: web
-
-  web-test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6.0.2
-
-      - uses: pnpm/action-setup@v4.2.0
-        with:
-          version: 10
-      - uses: actions/setup-node@v6.2.0
-        with:
-          node-version: 22
-          cache: pnpm
-          cache-dependency-path: web/pnpm-lock.yaml
-
-      - name: Install dependencies
-        run: pnpm install
         working-directory: web
 
       - name: Test
