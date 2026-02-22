@@ -145,12 +145,13 @@
 }
 
 /* Mobile adjustments */
-@media (max-width: 767px) {
+@media (max-width: 767px), (orientation: portrait) {
   .playback-controls {
     bottom: 44px; /* Clear the 36px sidebar peek + gap */
     padding: var(--space-1) var(--space-2) var(--space-3);
     gap: var(--space-1);
-    max-width: calc(100vw - var(--space-4));
+    width: calc(100vw - 48px);
+    max-width: calc(100vw - 48px);
   }
 
   .playback-time {
