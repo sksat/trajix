@@ -2,9 +2,9 @@
 
 GNSS/positioning data visualization web app. Parses 1GB+ [Android GNSS Logger](https://play.google.com/store/apps/details?id=com.google.android.apps.location.gps.gnsslogger) log files in-browser via WASM, and visualizes flight trajectories on 3D maps with sky plots and time-series charts.
 
-https://github.com/user-attachments/assets/c2eea891-5479-4f58-992d-862c72e3b26c
+![Demo](https://github.com/user-attachments/assets/10090900-729f-4587-a1f0-370c2540fdf0)
 
-*Demo: Chitose → Narita flight (2025-11-29), 607MB log file parsed in ~10s*
+*Chitose → Narita flight (2025-11-29), 607MB log file parsed in ~10s — [full video](https://github.com/user-attachments/assets/c2eea891-5479-4f58-992d-862c72e3b26c)*
 
 ## Features
 
