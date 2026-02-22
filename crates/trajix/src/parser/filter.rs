@@ -1,6 +1,7 @@
 use crate::error::ParseError;
 use crate::parser::line::Record;
-use crate::types::RecordType;
+use crate::record::fix::FixRecord;
+use crate::types::{FixProvider, RecordType};
 
 /// Iterator adapter that keeps only records of specified types.
 pub struct TypeFilter<I> {
@@ -131,9 +132,65 @@ pub trait FilterRecords: Iterator<Item = Result<Record, ParseError>> + Sized {
     fn filter_time(self, start_ms: Option<i64>, end_ms: Option<i64>) -> TimeFilter<Self> {
         TimeFilter::new(self, start_ms, end_ms)
     }
+
+    /// Extract only [`FixRecord`]s, discarding all other record types and errors.
+    fn fixes(self) -> FixExtractor<Self> {
+        FixExtractor { inner: self }
+    }
+
+    /// Extract only primary (GPS/FLP) [`FixRecord`]s, discarding NLP and other types.
+    fn primary_fixes(self) -> PrimaryFixExtractor<Self> {
+        PrimaryFixExtractor { inner: self }
+    }
 }
 
 impl<I> FilterRecords for I where I: Iterator<Item = Result<Record, ParseError>> {}
+
+/// Iterator adapter that extracts [`FixRecord`]s from a record stream.
+pub struct FixExtractor<I> {
+    inner: I,
+}
+
+impl<I> Iterator for FixExtractor<I>
+where
+    I: Iterator<Item = Result<Record, ParseError>>,
+{
+    type Item = FixRecord;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            match self.inner.next()? {
+                Ok(Record::Fix(fix)) => return Some(fix),
+                Ok(_) | Err(_) => continue,
+            }
+        }
+    }
+}
+
+/// Iterator adapter that extracts primary (GPS/FLP) [`FixRecord`]s.
+pub struct PrimaryFixExtractor<I> {
+    inner: I,
+}
+
+impl<I> Iterator for PrimaryFixExtractor<I>
+where
+    I: Iterator<Item = Result<Record, ParseError>>,
+{
+    type Item = FixRecord;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            match self.inner.next()? {
+                Ok(Record::Fix(fix))
+                    if fix.provider == FixProvider::Gps || fix.provider == FixProvider::Flp =>
+                {
+                    return Some(fix);
+                }
+                Ok(_) | Err(_) => continue,
+            }
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -300,5 +357,64 @@ Fix,GPS,36.212,140.097,284.0,0.0,9.9,,1771641940000,,,2092092474651730,2.8,0,,,"
         // Only the Fix at 1771641935000 matches both filters
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].timestamp_ms(), Some(1771641935000));
+    }
+
+    // ──────────────────────────────────────────────
+    // fixes() / primary_fixes() tests
+    // ──────────────────────────────────────────────
+
+    #[test]
+    fn fixes_extracts_only_fix_records() {
+        let input = "\
+Fix,GPS,36.212,140.097,284.0,0.0,9.9,,1771641930000,,,2092092474651730,2.8,0,,,
+Status,1771641934000,37,0,1,2,1575420030,25.70,192.285,31.194557,1,1,1,22.1
+Fix,FLP,36.213,140.098,285.0,1.0,5.0,,1771641935000,,,2092092474651730,2.8,0,,,
+UncalAccel,1771641935895,2092092486937784,-3.3762727,-5.9318075,-2.469393,0.0,0.0,0.0,3
+Fix,NLP,36.500,140.500,,,400.0,,1771641940000,,,,,,,,";
+
+        let records = parse_lines(input);
+        let fixes: Vec<_> = records.into_iter().fixes().collect();
+
+        assert_eq!(fixes.len(), 3);
+        assert_eq!(fixes[0].provider, crate::types::FixProvider::Gps);
+        assert_eq!(fixes[1].provider, crate::types::FixProvider::Flp);
+        assert_eq!(fixes[2].provider, crate::types::FixProvider::Nlp);
+    }
+
+    #[test]
+    fn fixes_returns_empty_for_no_fixes() {
+        let input = "\
+Status,1771641934000,37,0,1,2,1575420030,25.70,192.285,31.194557,1,1,1,22.1
+UncalAccel,1771641935895,2092092486937784,-3.3762727,-5.9318075,-2.469393,0.0,0.0,0.0,3";
+
+        let records = parse_lines(input);
+        let fixes: Vec<_> = records.into_iter().fixes().collect();
+        assert!(fixes.is_empty());
+    }
+
+    #[test]
+    fn primary_fixes_excludes_nlp() {
+        let input = "\
+Fix,GPS,36.212,140.097,284.0,0.0,9.9,,1771641930000,,,2092092474651730,2.8,0,,,
+Fix,NLP,36.500,140.500,,,400.0,,1771641935000,,,,,,,,
+Fix,FLP,36.213,140.098,285.0,1.0,5.0,,1771641940000,,,2092092474651730,2.8,0,,,";
+
+        let records = parse_lines(input);
+        let fixes: Vec<_> = records.into_iter().primary_fixes().collect();
+
+        assert_eq!(fixes.len(), 2);
+        assert_eq!(fixes[0].provider, crate::types::FixProvider::Gps);
+        assert_eq!(fixes[1].provider, crate::types::FixProvider::Flp);
+    }
+
+    #[test]
+    fn primary_fixes_returns_empty_for_nlp_only() {
+        let input = "\
+Fix,NLP,36.500,140.500,,,400.0,,1771641935000,,,,,,,,
+Fix,NLP,36.501,140.501,,,400.0,,1771641936000,,,,,,,,";
+
+        let records = parse_lines(input);
+        let fixes: Vec<_> = records.into_iter().primary_fixes().collect();
+        assert!(fixes.is_empty());
     }
 }

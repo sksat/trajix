@@ -3,100 +3,11 @@ use tsify_next::Tsify;
 use wasm_bindgen::prelude::*;
 
 use trajix::dead_reckoning::{DeadReckoning, DrConfig, DrSource};
+use trajix::downsample::{DecimatedSample, StreamingDecimator};
 use trajix::parser::header::HeaderInfo;
 use trajix::parser::line::{parse_line, Record};
 use trajix::record::fix::FixRecord;
 use trajix::summary::EpochAggregator;
-
-// ────────────────────────────────────────────
-// Streaming sensor decimator
-// ────────────────────────────────────────────
-
-/// Fixed-grid streaming decimator.
-///
-/// Keeps one sample per time bin (closest to bin center).
-/// Operates on one sample at a time — no buffering of full dataset.
-struct StreamingDecimator<V: Clone> {
-    interval_ms: i64,
-    /// Grid origin (first sample's time).
-    grid_start: Option<i64>,
-    /// Current bin index.
-    current_bin: i64,
-    /// Best candidate in current bin.
-    best: Option<(i64, V)>,
-    /// Best candidate's distance to bin center.
-    best_dist: i64,
-    /// Output buffer.
-    output: Vec<DecimatedSample<V>>,
-}
-
-#[derive(Debug, Clone, Serialize, Tsify)]
-struct DecimatedSample<V: Clone> {
-    time_ms: i64,
-    value: V,
-}
-
-impl<V: Clone> StreamingDecimator<V> {
-    fn new(interval_ms: i64) -> Self {
-        Self {
-            interval_ms,
-            grid_start: None,
-            current_bin: 0,
-            best: None,
-            best_dist: i64::MAX,
-            output: Vec::new(),
-        }
-    }
-
-    fn push(&mut self, time_ms: i64, value: V) {
-        let start = match self.grid_start {
-            Some(s) => s,
-            None => {
-                // First sample: emit it and set grid origin
-                self.grid_start = Some(time_ms);
-                self.current_bin = 0;
-                self.output.push(DecimatedSample {
-                    time_ms,
-                    value,
-                });
-                return;
-            }
-        };
-
-        let bin = (time_ms - start).div_euclid(self.interval_ms);
-
-        if bin > self.current_bin {
-            // Flush previous bin's best candidate
-            self.flush_best();
-            self.current_bin = bin;
-        }
-
-        // Check if this sample is closer to current bin center
-        let center = start + bin * self.interval_ms + self.interval_ms / 2;
-        let dist = (time_ms - center).abs();
-        if dist < self.best_dist {
-            self.best_dist = dist;
-            self.best = Some((time_ms, value));
-        }
-    }
-
-    fn flush_best(&mut self) {
-        if let Some((time_ms, value)) = self.best.take() {
-            self.output.push(DecimatedSample { time_ms, value });
-        }
-        self.best_dist = i64::MAX;
-    }
-
-    fn finalize(mut self) -> Vec<DecimatedSample<V>> {
-        self.flush_best();
-        self.output
-    }
-
-    #[cfg(test)]
-    fn output_count(&self) -> usize {
-        self.output.len() + if self.best.is_some() { 1 } else { 0 }
-    }
-}
 
 // ────────────────────────────────────────────
 // Sensor value types for decimation

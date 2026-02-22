@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::error::ParseError;
+use crate::geo;
 use crate::types::FixProvider;
 
 /// Expected number of CSV fields in a Fix record (including the "Fix" prefix).
@@ -70,6 +71,34 @@ impl FixRecord {
                 Some(fields[16].to_string())
             },
         })
+    }
+}
+
+impl FixRecord {
+    /// Haversine distance to another fix in meters.
+    pub fn distance_to(&self, other: &Self) -> f64 {
+        geo::haversine_distance_m(
+            self.latitude_deg,
+            self.longitude_deg,
+            other.latitude_deg,
+            other.longitude_deg,
+        )
+    }
+
+    /// Time difference in seconds (other - self). Positive if other is later.
+    pub fn time_delta_s(&self, other: &Self) -> f64 {
+        (other.unix_time_ms - self.unix_time_ms) as f64 / 1000.0
+    }
+
+    /// Implied ground speed between two fixes in m/s.
+    ///
+    /// Returns `None` if the time delta is zero.
+    pub fn speed_between(&self, other: &Self) -> Option<f64> {
+        let dt = self.time_delta_s(other).abs();
+        if dt == 0.0 {
+            return None;
+        }
+        Some(self.distance_to(other) / dt)
     }
 }
 
@@ -244,6 +273,104 @@ mod tests {
         match result.unwrap_err() {
             ParseError::UnknownProvider(p) => assert_eq!(p, "UNKNOWN"),
             _ => panic!("expected UnknownProvider error"),
+        }
+    }
+
+    // ── distance_to / time_delta_s / speed_between ──
+
+    fn make_fix(lat: f64, lon: f64, time_ms: i64) -> FixRecord {
+        FixRecord {
+            provider: FixProvider::Gps,
+            latitude_deg: lat,
+            longitude_deg: lon,
+            altitude_m: None,
+            speed_mps: None,
+            accuracy_m: None,
+            bearing_deg: None,
+            unix_time_ms: time_ms,
+            speed_accuracy_mps: None,
+            bearing_accuracy_deg: None,
+            elapsed_realtime_ns: None,
+            vertical_accuracy_m: None,
+            mock_location: false,
+            num_used_signals: None,
+            vertical_speed_accuracy_mps: None,
+            solution_type: None,
+        }
+    }
+
+    #[test]
+    fn distance_to_same_point() {
+        let a = make_fix(36.212, 140.097, 1000);
+        assert!(a.distance_to(&a) < 1e-10);
+    }
+
+    #[test]
+    fn distance_to_known_points() {
+        // ~111m apart (0.001 deg latitude)
+        let a = make_fix(36.0, 140.0, 1000);
+        let b = make_fix(36.001, 140.0, 2000);
+        let dist = a.distance_to(&b);
+        assert!((dist - 111.0).abs() < 2.0, "expected ~111m, got {dist:.1}m");
+    }
+
+    #[test]
+    fn distance_to_is_symmetric() {
+        let a = make_fix(35.6812, 139.7671, 1000);
+        let b = make_fix(34.7024, 135.4959, 2000);
+        assert!((a.distance_to(&b) - b.distance_to(&a)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn time_delta_s_positive() {
+        let a = make_fix(36.0, 140.0, 1000);
+        let b = make_fix(36.0, 140.0, 3500);
+        assert!((a.time_delta_s(&b) - 2.5).abs() < 1e-10);
+    }
+
+    #[test]
+    fn time_delta_s_negative() {
+        let a = make_fix(36.0, 140.0, 5000);
+        let b = make_fix(36.0, 140.0, 3000);
+        assert!((a.time_delta_s(&b) - (-2.0)).abs() < 1e-10);
+    }
+
+    #[test]
+    fn speed_between_known() {
+        // 111m in 1s = 111 m/s
+        let a = make_fix(36.0, 140.0, 0);
+        let b = make_fix(36.001, 140.0, 1000);
+        let speed = a.speed_between(&b).unwrap();
+        assert!((speed - 111.0).abs() < 2.0, "expected ~111 m/s, got {speed:.1}");
+    }
+
+    #[test]
+    fn speed_between_zero_dt() {
+        let a = make_fix(36.0, 140.0, 1000);
+        let b = make_fix(36.001, 140.0, 1000);
+        assert!(a.speed_between(&b).is_none());
+    }
+
+    #[test]
+    fn speed_between_is_symmetric() {
+        let a = make_fix(36.0, 140.0, 0);
+        let b = make_fix(36.001, 140.0, 1000);
+        let s1 = a.speed_between(&b).unwrap();
+        let s2 = b.speed_between(&a).unwrap();
+        assert!((s1 - s2).abs() < 1e-6);
+    }
+
+    #[test]
+    fn distance_to_fixture_data() {
+        // Use real fixture data: two consecutive GPS fixes
+        let content = load_fixture("fix_normal_gps.txt");
+        let lines: Vec<&str> = content.lines().filter(|l| !l.is_empty()).collect();
+        if lines.len() >= 2 {
+            let a = FixRecord::parse(lines[0]).unwrap();
+            let b = FixRecord::parse(lines[1]).unwrap();
+            let dist = a.distance_to(&b);
+            // Consecutive fixes should be close (< 100m typically)
+            assert!(dist < 10000.0, "consecutive fixes should be close, got {dist:.1}m");
         }
     }
 }

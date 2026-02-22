@@ -1,12 +1,16 @@
 //! Downsampling algorithms for high-frequency sensor data.
 //!
-//! Two strategies are provided:
+//! Three strategies are provided:
 //!
 //! 1. **Temporal decimation** (`decimate_by_time`): Keep one sample per time interval.
 //!    Simple, predictable, and safe. Use for reducing ~100Hz IMU data to ~10Hz.
 //!
 //! 2. **LTTB** (`lttb`): Largest Triangle Three Buckets algorithm for visual
 //!    downsampling. Preserves peaks and shape of the signal. Use for chart rendering.
+//!
+//! 3. **Streaming decimation** (`StreamingDecimator`): Fixed-grid decimation that
+//!    processes one sample at a time — no buffering of the full dataset. Ideal for
+//!    inline decimation during parsing when the full dataset is too large to hold.
 
 /// A timestamped data point for downsampling.
 ///
@@ -296,6 +300,111 @@ fn bucket_average<V: LttbValue>(samples: &[Sample<V>]) -> (f64, f64) {
     let sum_x: f64 = samples.iter().map(|s| s.time_ms as f64).sum();
     let sum_y: f64 = samples.iter().map(|s| s.value.to_f64()).sum();
     (sum_x / n, sum_y / n)
+}
+
+// ──────────────────────────────────────────────
+// Streaming decimator
+// ──────────────────────────────────────────────
+
+/// A timestamped sample output by [`StreamingDecimator`].
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct DecimatedSample<V: Clone> {
+    pub time_ms: i64,
+    pub value: V,
+}
+
+/// Fixed-grid streaming decimator.
+///
+/// Keeps one sample per time bin (closest to bin center).
+/// Operates on one sample at a time — no buffering of the full dataset.
+/// Ideal for inline decimation during parsing.
+///
+/// # Example
+/// ```
+/// use trajix::downsample::StreamingDecimator;
+///
+/// // Decimate 100Hz accelerometer data to 10Hz
+/// let mut d = StreamingDecimator::new(100); // 100ms bins
+/// for i in 0..100 {
+///     d.push(1000 + i * 10, i as f64); // 10ms apart = 100Hz
+/// }
+/// let result = d.finalize();
+/// assert!(result.len() >= 10 && result.len() <= 12);
+/// ```
+pub struct StreamingDecimator<V: Clone> {
+    interval_ms: i64,
+    /// Grid origin (first sample's time).
+    grid_start: Option<i64>,
+    /// Current bin index.
+    current_bin: i64,
+    /// Best candidate in current bin.
+    best: Option<(i64, V)>,
+    /// Best candidate's distance to bin center.
+    best_dist: i64,
+    /// Output buffer.
+    output: Vec<DecimatedSample<V>>,
+}
+
+impl<V: Clone> StreamingDecimator<V> {
+    /// Create a new streaming decimator with the given bin interval in milliseconds.
+    pub fn new(interval_ms: i64) -> Self {
+        Self {
+            interval_ms,
+            grid_start: None,
+            current_bin: 0,
+            best: None,
+            best_dist: i64::MAX,
+            output: Vec::new(),
+        }
+    }
+
+    /// Feed a single sample into the decimator.
+    pub fn push(&mut self, time_ms: i64, value: V) {
+        let start = match self.grid_start {
+            Some(s) => s,
+            None => {
+                // First sample: emit it and set grid origin
+                self.grid_start = Some(time_ms);
+                self.current_bin = 0;
+                self.output.push(DecimatedSample { time_ms, value });
+                return;
+            }
+        };
+
+        let bin = (time_ms - start).div_euclid(self.interval_ms);
+
+        if bin > self.current_bin {
+            // Flush previous bin's best candidate
+            self.flush_best();
+            self.current_bin = bin;
+        }
+
+        // Check if this sample is closer to current bin center
+        let center = start + bin * self.interval_ms + self.interval_ms / 2;
+        let dist = (time_ms - center).abs();
+        if dist < self.best_dist {
+            self.best_dist = dist;
+            self.best = Some((time_ms, value));
+        }
+    }
+
+    fn flush_best(&mut self) {
+        if let Some((time_ms, value)) = self.best.take() {
+            self.output.push(DecimatedSample { time_ms, value });
+        }
+        self.best_dist = i64::MAX;
+    }
+
+    /// Finalize the decimator and return all selected samples.
+    pub fn finalize(mut self) -> Vec<DecimatedSample<V>> {
+        self.flush_best();
+        self.output
+    }
+
+    /// Number of samples that would be output (including unflushed best).
+    pub fn output_count(&self) -> usize {
+        self.output.len() + if self.best.is_some() { 1 } else { 0 }
+    }
 }
 
 #[cfg(test)]
@@ -845,5 +954,96 @@ mod tests {
         // Should have both 0.0 and 1.0 values
         assert!(result.iter().any(|s| s.value == 0.0));
         assert!(result.iter().any(|s| s.value == 1.0));
+    }
+
+    // ──────────────────────────────────────────────
+    // StreamingDecimator tests
+    // ──────────────────────────────────────────────
+
+    #[test]
+    fn streaming_decimator_basic() {
+        let mut d = StreamingDecimator::new(100);
+        for i in 0..100 {
+            d.push(1000 + i * 10, i as f64);
+        }
+        let result = d.finalize();
+        assert!(
+            result.len() >= 10 && result.len() <= 12,
+            "expected ~10 samples, got {}",
+            result.len()
+        );
+        assert_eq!(result[0].time_ms, 1000);
+    }
+
+    #[test]
+    fn streaming_decimator_sparse_input() {
+        let mut d = StreamingDecimator::new(100);
+        d.push(1000, 1.0);
+        d.push(2000, 2.0);
+        d.push(3000, 3.0);
+        let result = d.finalize();
+        assert_eq!(result.len(), 3);
+    }
+
+    #[test]
+    fn streaming_decimator_single_sample() {
+        let mut d = StreamingDecimator::new(100);
+        d.push(1000, 42.0);
+        let result = d.finalize();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].time_ms, 1000);
+    }
+
+    #[test]
+    fn streaming_decimator_empty() {
+        let d: StreamingDecimator<f64> = StreamingDecimator::new(100);
+        let result = d.finalize();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn streaming_decimator_selects_nearest_to_center() {
+        let mut d = StreamingDecimator::new(100);
+        // First sample (always emitted)
+        d.push(1000, 0.0);
+        // Bin 1 = [1100, 1200), center = 1150
+        d.push(1110, 1.0); // dist = 40
+        d.push(1148, 2.0); // dist = 2 (closest!)
+        d.push(1190, 3.0); // dist = 40
+        // Bin 2 (forces flush of bin 1)
+        d.push(1250, 4.0);
+
+        let result = d.finalize();
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0].time_ms, 1000);
+        assert_eq!(result[1].time_ms, 1148);
+    }
+
+    #[test]
+    fn streaming_decimator_preserves_order() {
+        let mut d = StreamingDecimator::new(100);
+        for i in 0..50 {
+            d.push(1000 + i * 20, i as f64);
+        }
+        let result = d.finalize();
+        for window in result.windows(2) {
+            assert!(
+                window[0].time_ms < window[1].time_ms,
+                "order violated: {} >= {}",
+                window[0].time_ms,
+                window[1].time_ms
+            );
+        }
+    }
+
+    #[test]
+    fn streaming_decimator_output_count() {
+        let mut d = StreamingDecimator::new(100);
+        for i in 0..100 {
+            d.push(1000 + i * 10, i as f64);
+        }
+        let count = d.output_count();
+        let result = d.finalize();
+        assert_eq!(count, result.len());
     }
 }

@@ -2,10 +2,8 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
 
-use trajix::parser::line::Record;
-use trajix::parser::streaming::StreamingParser;
-use trajix::record::fix::FixRecord;
-use trajix::types::FixProvider;
+use trajix::prelude::*;
+use trajix::geo;
 
 fn main() {
     let path = std::env::args().nth(1).unwrap_or_else(|| {
@@ -82,6 +80,21 @@ fn analyze_fixes(fixes: &[FixRecord]) {
         println!("No Fix records found.");
         return;
     }
+
+    // Summary via library stats API
+    let summary = trajix::stats::summarize_fixes(fixes);
+    println!("=== Fix Summary ===");
+    println!("  Count: {}", summary.count);
+    println!("  Duration: {:.0}s ({:.1} hours)", summary.duration_s, summary.duration_s / 3600.0);
+    println!("  Total distance: {:.0}m ({:.1} km)", summary.total_distance_m, summary.total_distance_m / 1000.0);
+    if let Some(ref acc) = summary.accuracy {
+        println!("  Accuracy (m): min={:.1}, median={:.1}, p90={:.1}, p95={:.1}, max={:.1}",
+            acc.min, acc.median, acc.p90, acc.p95, acc.max);
+    }
+    for pc in &summary.per_provider {
+        println!("  {}: {} fixes", pc.provider.as_str(), pc.count);
+    }
+    println!();
 
     // Per-provider stats
     let mut by_provider: HashMap<FixProvider, Vec<&FixRecord>> = HashMap::new();
@@ -336,7 +349,7 @@ fn analyze_jumps_ref(fixes: &[&FixRecord]) {
             continue;
         }
 
-        let dist_m = haversine_m(
+        let dist_m = geo::haversine_distance_m(
             prev.latitude_deg,
             prev.longitude_deg,
             curr.latitude_deg,
@@ -402,7 +415,7 @@ fn analyze_jumps_ref(fixes: &[&FixRecord]) {
         );
         for (speed, _idx, prev, curr) in top {
             let dt_s = (curr.unix_time_ms - prev.unix_time_ms) as f64 / 1000.0;
-            let dist_m = haversine_m(
+            let dist_m = geo::haversine_distance_m(
                 prev.latitude_deg,
                 prev.longitude_deg,
                 curr.latitude_deg,
@@ -647,15 +660,3 @@ fn analyze_altitude(fixes: &[FixRecord]) {
     }
 }
 
-/// Haversine distance in meters
-fn haversine_m(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
-    const R: f64 = 6_371_000.0;
-    let dlat = (lat2 - lat1).to_radians();
-    let dlon = (lon2 - lon1).to_radians();
-    let lat1r = lat1.to_radians();
-    let lat2r = lat2.to_radians();
-
-    let a = (dlat / 2.0).sin().powi(2) + lat1r.cos() * lat2r.cos() * (dlon / 2.0).sin().powi(2);
-    let c = 2.0 * a.sqrt().asin();
-    R * c
-}
