@@ -45,9 +45,21 @@ pub use record::fix::FixRecord;
 pub use record::raw::RawRecord;
 pub use record::sensor::{GameRotationVectorRecord, OrientationRecord, UncalibratedSensorRecord};
 pub use record::status::StatusRecord;
-pub use quality::FixQuality;
+pub use quality::{classify_fixes, FixQuality, DEFAULT_GAP_THRESHOLD_MS};
 pub use summary::{ConstellationStats, EpochAggregator, FixEpoch, StatusEpoch};
 pub use types::{CodeType, ConstellationType, FixProvider, RecordType};
+
+// Dead Reckoning
+pub use dead_reckoning::{DeadReckoning, DrConfig, DrPoint, DrSource};
+
+// Downsampling
+pub use downsample::{
+    decimate_by_time, lttb, lttb_indices, DecimatedSample, LttbValue, Sample,
+    StreamingDecimator,
+};
+
+// Statistics
+pub use stats::{summarize_fixes, FixStats, PercentileStats, ProviderCount};
 
 /// Convenience re-exports for common usage patterns.
 ///
@@ -56,7 +68,7 @@ pub use types::{CodeType, ConstellationType, FixProvider, RecordType};
 /// ```
 pub mod prelude {
     pub use crate::{
-        ConstellationType, FilterRecords, FixProvider, FixRecord, ParseError, Record, RecordType,
-        StatusRecord, StreamingParser,
+        ConstellationType, DeadReckoning, DrConfig, DrPoint, DrSource, FilterRecords, FixProvider,
+        FixQuality, FixRecord, ParseError, Record, RecordType, StatusRecord, StreamingParser,
     };
 }

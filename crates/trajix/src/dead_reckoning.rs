@@ -28,20 +28,20 @@ const METERS_PER_DEG_LAT: f64 = 111_132.0;
 // Vec3
 // ────────────────────────────────────────────
 
-/// 3D vector.
+/// 3D vector (internal use only).
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Vec3 {
-    pub x: f64,
-    pub y: f64,
-    pub z: f64,
+pub(crate) struct Vec3 {
+    pub(crate) x: f64,
+    pub(crate) y: f64,
+    pub(crate) z: f64,
 }
 
 impl Vec3 {
-    pub fn new(x: f64, y: f64, z: f64) -> Self {
+    pub(crate) fn new(x: f64, y: f64, z: f64) -> Self {
         Self { x, y, z }
     }
 
-    pub fn zero() -> Self {
+    pub(crate) fn zero() -> Self {
         Self {
             x: 0.0,
             y: 0.0,
@@ -49,7 +49,7 @@ impl Vec3 {
         }
     }
 
-    pub fn magnitude(self) -> f64 {
+    pub(crate) fn magnitude(self) -> f64 {
         (self.x * self.x + self.y * self.y + self.z * self.z).sqrt()
     }
 }
@@ -93,19 +93,20 @@ fn cross(a: Vec3, b: Vec3) -> Vec3 {
 /// the quaternion rotates ENU (world) → device frame.
 /// Use `q.conjugate().rotate(v_device)` to get `v_enu`.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Quat {
-    pub x: f64,
-    pub y: f64,
-    pub z: f64,
-    pub w: f64,
+pub(crate) struct Quat {
+    pub(crate) x: f64,
+    pub(crate) y: f64,
+    pub(crate) z: f64,
+    pub(crate) w: f64,
 }
 
 impl Quat {
-    pub fn new(x: f64, y: f64, z: f64, w: f64) -> Self {
+    pub(crate) fn new(x: f64, y: f64, z: f64, w: f64) -> Self {
         Self { x, y, z, w }
     }
 
-    pub fn identity() -> Self {
+    #[allow(dead_code)] // Used in tests only
+    pub(crate) fn identity() -> Self {
         Self {
             x: 0.0,
             y: 0.0,
@@ -115,7 +116,7 @@ impl Quat {
     }
 
     /// Conjugate (= inverse for unit quaternions).
-    pub fn conjugate(self) -> Self {
+    pub(crate) fn conjugate(self) -> Self {
         Self::new(-self.x, -self.y, -self.z, self.w)
     }
 
@@ -123,7 +124,7 @@ impl Quat {
     ///
     /// Optimized formula: v' = v + 2w(u × v) + 2(u × (u × v))
     /// where u = (x, y, z) is the vector part of q.
-    pub fn rotate(self, v: Vec3) -> Vec3 {
+    pub(crate) fn rotate(self, v: Vec3) -> Vec3 {
         let u = Vec3::new(self.x, self.y, self.z);
         let t = cross(u, v) * 2.0;
         v + t * self.w + cross(u, t)
@@ -231,18 +232,25 @@ impl DeadReckoning {
 
     /// Dispatch a parsed record.
     ///
+    /// Returns `Some(DrPoint)` when a trajectory point is emitted (GNSS fix or DR estimate).
     /// Only Fix, UncalAccel, and GameRotationVector are used; others ignored.
-    pub fn push(&mut self, record: &Record) {
+    pub fn push(&mut self, record: &Record) -> Option<DrPoint> {
         match record {
             Record::Fix(f) => self.push_fix(f),
             Record::UncalAccel(a) => self.push_accel(a),
-            Record::GameRotationVector(g) => self.push_attitude(g),
-            _ => {}
+            Record::GameRotationVector(g) => {
+                self.push_attitude(g);
+                None
+            }
+            _ => None,
         }
     }
 
     /// Process a GNSS fix.
-    pub fn push_fix(&mut self, fix: &FixRecord) {
+    ///
+    /// Returns `Some(DrPoint)` with `source: Gnss` when the fix has good accuracy.
+    /// Returns `None` for degraded fixes (which start or continue DR internally).
+    pub fn push_fix(&mut self, fix: &FixRecord) -> Option<DrPoint> {
         let accuracy = fix.accuracy_m.unwrap_or(f64::MAX);
 
         if accuracy <= self.config.accuracy_threshold_m {
@@ -255,27 +263,32 @@ impl DeadReckoning {
                 speed_mps: fix.speed_mps,
                 bearing_deg: fix.bearing_deg,
             });
-            self.trajectory.push(DrPoint {
+            let point = DrPoint {
                 time_ms: fix.unix_time_ms,
                 latitude_deg: fix.latitude_deg,
                 longitude_deg: fix.longitude_deg,
                 altitude_m: fix.altitude_m.unwrap_or(0.0),
                 source: DrSource::Gnss,
-            });
-        } else if self.state.is_none() {
-            // Degraded fix: start DR from last good anchor
-            if let Some(anchor) = &self.last_fix {
-                let vel = velocity_from_anchor(anchor);
-                self.state = Some(DrState {
-                    time_ms: fix.unix_time_ms,
-                    pos_enu: Vec3::zero(),
-                    vel_enu: vel,
-                    anchor_lat_deg: anchor.lat_deg,
-                    anchor_lon_deg: anchor.lon_deg,
-                    anchor_alt_m: anchor.alt_m,
-                    dr_start_ms: fix.unix_time_ms,
-                });
+            };
+            self.trajectory.push(point.clone());
+            Some(point)
+        } else {
+            if self.state.is_none() {
+                // Degraded fix: start DR from last good anchor
+                if let Some(anchor) = &self.last_fix {
+                    let vel = velocity_from_anchor(anchor);
+                    self.state = Some(DrState {
+                        time_ms: fix.unix_time_ms,
+                        pos_enu: Vec3::zero(),
+                        vel_enu: vel,
+                        anchor_lat_deg: anchor.lat_deg,
+                        anchor_lon_deg: anchor.lon_deg,
+                        anchor_alt_m: anchor.alt_m,
+                        dr_start_ms: fix.unix_time_ms,
+                    });
+                }
             }
+            None
         }
     }
 
@@ -285,32 +298,35 @@ impl DeadReckoning {
     }
 
     /// Process an uncalibrated accelerometer reading.
-    pub fn push_accel(&mut self, accel: &UncalibratedSensorRecord) {
+    ///
+    /// Returns `Some(DrPoint)` with `source: DeadReckoning` when DR is active
+    /// and a new position estimate is produced.
+    pub fn push_accel(&mut self, accel: &UncalibratedSensorRecord) -> Option<DrPoint> {
         let attitude = match self.attitude {
             Some(q) => q,
-            None => return,
+            None => return None,
         };
 
         let state = match &mut self.state {
             Some(s) => s,
-            None => return,
+            None => return None,
         };
 
         // Check max duration
         if accel.utc_time_ms - state.dr_start_ms > self.config.max_dr_duration_ms {
-            return;
+            return None;
         }
 
         let dt_s = (accel.utc_time_ms - state.time_ms) as f64 / 1000.0;
 
         if dt_s < self.config.min_dt_s {
-            return;
+            return None;
         }
         if dt_s > self.config.max_dt_s {
             // Large gap: reset velocity, don't integrate
             state.vel_enu = Vec3::zero();
             state.time_ms = accel.utc_time_ms;
-            return;
+            return None;
         }
 
         // Calibrated acceleration in device frame
@@ -340,13 +356,25 @@ impl DeadReckoning {
         // Convert to lat/lon and emit
         let (lat, lon) = enu_to_latlon(state.pos_enu, state.anchor_lat_deg, state.anchor_lon_deg);
 
-        self.trajectory.push(DrPoint {
+        let point = DrPoint {
             time_ms: accel.utc_time_ms,
             latitude_deg: lat,
             longitude_deg: lon,
             altitude_m: state.anchor_alt_m + state.pos_enu.z,
             source: DrSource::DeadReckoning,
-        });
+        };
+        self.trajectory.push(point.clone());
+        Some(point)
+    }
+
+    /// Process all records from an iterator and return the full trajectory.
+    ///
+    /// Convenience method that feeds all records and calls [`finalize`].
+    pub fn process_all(mut self, records: impl IntoIterator<Item = Record>) -> Vec<DrPoint> {
+        for record in records {
+            self.push(&record);
+        }
+        self.finalize()
     }
 
     /// Return the trajectory.
@@ -796,5 +824,110 @@ mod tests {
 
         let traj = dr.finalize();
         assert_eq!(traj.len(), 2); // 1 GNSS + 1 DR
+    }
+
+    // ── Streaming output API ──
+
+    #[test]
+    fn push_fix_returns_gnss_point() {
+        let mut dr = DeadReckoning::new(DrConfig::default());
+        let fix = make_fix(1000, 5.0, Some(0.0), None);
+        let result = dr.push_fix(&fix);
+        assert!(result.is_some());
+        let pt = result.unwrap();
+        assert_eq!(pt.source, DrSource::Gnss);
+        assert_eq!(pt.time_ms, 1000);
+        assert!(approx_eq(pt.latitude_deg, 36.0, 1e-10));
+    }
+
+    #[test]
+    fn push_fix_degraded_returns_none() {
+        let mut dr = DeadReckoning::new(DrConfig::default());
+        // Good fix first (anchor)
+        dr.push_fix(&make_fix(1000, 5.0, Some(0.0), None));
+        // Degraded fix starts DR but returns no point
+        let result = dr.push_fix(&make_fix(2000, 50.0, None, None));
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn push_accel_returns_dr_point() {
+        let mut dr = DeadReckoning::new(DrConfig::default());
+        dr.push_fix(&make_fix(1000, 5.0, Some(0.0), None));
+        dr.push_fix(&make_fix(2000, 50.0, None, None));
+        dr.push_attitude(&make_grv(2000, 0.0, 0.0, 0.0, 1.0));
+        let result = dr.push_accel(&make_accel(2010, 0.0, 0.0, GRAVITY_MS2));
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().source, DrSource::DeadReckoning);
+    }
+
+    #[test]
+    fn push_accel_no_state_returns_none() {
+        let mut dr = DeadReckoning::new(DrConfig::default());
+        // No fix at all — accel should return None
+        dr.push_attitude(&make_grv(1000, 0.0, 0.0, 0.0, 1.0));
+        assert!(dr.push_accel(&make_accel(1010, 0.0, 0.0, GRAVITY_MS2)).is_none());
+    }
+
+    #[test]
+    fn push_returns_point_for_fix() {
+        let mut dr = DeadReckoning::new(DrConfig::default());
+        let result = dr.push(&Record::Fix(make_fix(1000, 5.0, Some(0.0), None)));
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().source, DrSource::Gnss);
+    }
+
+    #[test]
+    fn push_returns_none_for_attitude() {
+        let mut dr = DeadReckoning::new(DrConfig::default());
+        let result = dr.push(&Record::GameRotationVector(make_grv(1000, 0.0, 0.0, 0.0, 1.0)));
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn push_returns_none_for_skipped() {
+        let mut dr = DeadReckoning::new(DrConfig::default());
+        assert!(dr.push(&Record::Skipped).is_none());
+    }
+
+    #[test]
+    fn process_all_matches_finalize() {
+        let records = vec![
+            Record::Fix(make_fix(1000, 5.0, Some(10.0), Some(90.0))),
+            Record::Fix(make_fix(2000, 50.0, None, None)),
+            Record::GameRotationVector(make_grv(2000, 0.0, 0.0, 0.0, 1.0)),
+            Record::UncalAccel(make_accel(2010, 0.0, 0.0, GRAVITY_MS2)),
+            Record::UncalAccel(make_accel(2020, 0.0, 0.0, GRAVITY_MS2)),
+            Record::Fix(make_fix(3000, 5.0, Some(0.0), None)),
+        ];
+
+        // Manual push + finalize
+        let mut dr1 = DeadReckoning::new(DrConfig::default());
+        for r in &records {
+            dr1.push(r);
+        }
+        let traj1 = dr1.finalize();
+
+        // process_all
+        let dr2 = DeadReckoning::new(DrConfig::default());
+        let traj2 = dr2.process_all(records);
+
+        assert_eq!(traj1.len(), traj2.len());
+        for (a, b) in traj1.iter().zip(&traj2) {
+            assert_eq!(a.time_ms, b.time_ms);
+            assert_eq!(a.source, b.source);
+        }
+    }
+
+    #[test]
+    fn push_fix_still_accumulates() {
+        let mut dr = DeadReckoning::new(DrConfig::default());
+        let returned = dr.push_fix(&make_fix(1000, 5.0, Some(0.0), None));
+        assert!(returned.is_some());
+        // finalize should still contain the same point (backward compat)
+        let traj = dr.finalize();
+        assert_eq!(traj.len(), 1);
+        assert_eq!(traj[0].time_ms, 1000);
+        assert_eq!(traj[0].source, DrSource::Gnss);
     }
 }

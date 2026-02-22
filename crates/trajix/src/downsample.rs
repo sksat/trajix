@@ -308,7 +308,7 @@ fn bucket_average<V: LttbValue>(samples: &[Sample<V>]) -> (f64, f64) {
 
 /// A timestamped sample output by [`StreamingDecimator`].
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct DecimatedSample<V: Clone> {
+pub struct DecimatedSample<V> {
     pub time_ms: i64,
     pub value: V,
 }
@@ -331,7 +331,7 @@ pub struct DecimatedSample<V: Clone> {
 /// let result = d.finalize();
 /// assert!(result.len() >= 10 && result.len() <= 12);
 /// ```
-pub struct StreamingDecimator<V: Clone> {
+pub struct StreamingDecimator<V> {
     interval_ms: i64,
     /// Grid origin (first sample's time).
     grid_start: Option<i64>,

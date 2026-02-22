@@ -69,8 +69,7 @@ println!("{} primary fixes", fixes.len());
 ### Distance, speed, and statistics
 
 ```rust
-use trajix::FixRecord;
-use trajix::stats::summarize_fixes;
+use trajix::{FixRecord, summarize_fixes};
 
 fn analyze(fixes: &[FixRecord]) {
     // Distance and speed between two fixes
@@ -91,8 +90,7 @@ fn analyze(fixes: &[FixRecord]) {
 ### Fix quality classification
 
 ```rust
-use trajix::quality::{classify_fixes, FixQuality, DEFAULT_GAP_THRESHOLD_MS};
-use trajix::FixRecord;
+use trajix::{classify_fixes, FixQuality, FixRecord, DEFAULT_GAP_THRESHOLD_MS};
 
 fn classify(fixes: &[FixRecord]) {
     let qualities = classify_fixes(fixes, DEFAULT_GAP_THRESHOLD_MS);
@@ -118,10 +116,33 @@ let bearing = bearing_deg(35.6812, 139.7671, 34.7024, 135.4959);
 println!("Bearing: {:.1}°", bearing);
 ```
 
+### Dead Reckoning (GNSS + IMU fusion)
+
+```rust
+use trajix::prelude::*;
+
+let file = std::fs::File::open("gnss_log.txt").unwrap();
+let parser = StreamingParser::new(std::io::BufReader::new(file));
+
+let mut dr = DeadReckoning::new(DrConfig::default());
+for result in parser {
+    if let Ok(record) = result {
+        if let Some(point) = dr.push(&record) {
+            println!("{}: ({}, {}) [{:?}]",
+                point.time_ms, point.latitude_deg, point.longitude_deg, point.source);
+        }
+    }
+}
+
+let trajectory = dr.finalize();
+println!("{} trajectory points", trajectory.len());
+```
+
 ## Modules
 
 | Module | Description |
 |--------|-------------|
+| `prelude` | Convenience re-exports for common usage patterns |
 | `parser` | Streaming CSV parser (`StreamingParser`), line parser (`parse_line`), iterator filters |
 | `record` | Typed record structs: `FixRecord`, `StatusRecord`, `RawRecord`, sensor records |
 | `types` | Core enums: `ConstellationType`, `FixProvider`, `RecordType`, `CodeType` |
@@ -130,7 +151,7 @@ println!("Bearing: {:.1}°", bearing);
 | `stats` | Statistical summaries: `summarize_fixes`, `PercentileStats` |
 | `summary` | Epoch aggregation: `EpochAggregator`, `StatusEpoch`, `FixEpoch` |
 | `downsample` | Time-series reduction: `decimate_by_time`, `lttb`, `StreamingDecimator` |
-| `dead_reckoning` | IMU-based Dead Reckoning for GNSS-degraded segments |
+| `dead_reckoning` | GNSS + IMU fusion: `DeadReckoning`, `DrConfig`, streaming `push()` API |
 
 ## Record types
 
