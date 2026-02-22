@@ -71,6 +71,12 @@ export function PlaybackControls({ viewer }: PlaybackControlsProps) {
     return null;
   }, [viewer]);
 
+  // Sync clock multiplier with React speed state on mount
+  useEffect(() => {
+    if (!viewer) return;
+    viewer.clock.multiplier = speed;
+  }, [viewer, speed]);
+
   // Compute total duration string on mount / viewer change
   useEffect(() => {
     if (!viewer) return;
