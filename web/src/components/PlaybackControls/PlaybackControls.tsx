@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import * as Cesium from "cesium";
+import { useKeyboardShortcuts } from "../../hooks/useKeyboardShortcuts";
 import {
   createBearingTracker,
   updateBearing,
@@ -161,6 +162,29 @@ export function PlaybackControls({ viewer }: PlaybackControlsProps) {
       setIsFollowing(true);
     }
   }, [viewer, isFollowing, findMarker]);
+
+  const seekDelta = useCallback(
+    (deltaMs: number) => {
+      if (!viewer) return;
+      const clock = viewer.clock;
+      const newTime = Cesium.JulianDate.addSeconds(
+        clock.currentTime,
+        deltaMs / 1000,
+        new Cesium.JulianDate(),
+      );
+      // Clamp to [start, stop]
+      if (Cesium.JulianDate.compare(newTime, clock.startTime) < 0) {
+        clock.currentTime = clock.startTime.clone();
+      } else if (Cesium.JulianDate.compare(newTime, clock.stopTime) > 0) {
+        clock.currentTime = clock.stopTime.clone();
+      } else {
+        clock.currentTime = newTime;
+      }
+    },
+    [viewer],
+  );
+
+  useKeyboardShortcuts({ viewer, togglePlay, toggleFollow, seekDelta });
 
   // Smoothed camera follow via preRender listener.
   // Instead of trackedEntity (which rigidly follows entity position and

@@ -12,12 +12,36 @@ import { SkyPlot } from "./components/SkyPlot";
 import type { ProcessingResult } from "./types/gnss";
 import "./App.css";
 
+function CollapsibleSection({
+  title,
+  defaultOpen = true,
+  children,
+}: {
+  title: string;
+  defaultOpen?: boolean;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className={`collapsible-section ${open ? "open" : ""}`}>
+      <button className="collapsible-header" onClick={() => setOpen(!open)}>
+        <span className="collapsible-chevron">
+          {open ? "\u25BE" : "\u25B8"}
+        </span>
+        {title}
+      </button>
+      {open && <div className="collapsible-body">{children}</div>}
+    </div>
+  );
+}
+
 export default function App() {
   const { state, processFile } = useGnssData();
   const duckdb = useDuckDB();
   const [showNlp, setShowNlp] = useState(false);
   const [imagery, setImagery] = useState<GsiImageryKey>("seamlessphoto");
   const [viewer, setViewer] = useState<Cesium.Viewer | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const { currentTimeMs, seekTo } = useAnimationTime(viewer);
 
@@ -52,7 +76,7 @@ export default function App() {
           <span className="device-badge">DuckDB loading...</span>
         )}
         {duckdb.status === "ready" && (
-          <span className="device-badge">DuckDB ready</span>
+          <span className="device-badge status-ready">DuckDB ready</span>
         )}
       </header>
 
@@ -72,39 +96,53 @@ export default function App() {
               />
               <PlaybackControls viewer={viewer} />
             </div>
-            <aside className="sidebar">
-              <ResultSummary result={state.result} />
-              <SkyPlot
-                snapshots={state.result.satellite_snapshots ?? []}
-                currentTimeMs={currentTimeMs}
-              />
-              <div className="layer-controls">
-                <h3>Layers</h3>
-                <label className="toggle-label">
-                  地図:
-                  <select
-                    value={imagery}
-                    onChange={(e) =>
-                      setImagery(e.target.value as GsiImageryKey)
-                    }
-                  >
-                    {Object.entries(GSI_IMAGERY).map(([key, { label }]) => (
-                      <option key={key} value={key}>
-                        {label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="toggle-label">
-                  <input
-                    type="checkbox"
-                    checked={showNlp}
-                    onChange={(e) => setShowNlp(e.target.checked)}
-                  />
-                  Show NLP fixes
-                </label>
-                <FixQualitySummary result={state.result} />
-              </div>
+            <aside className={`sidebar ${sidebarOpen ? "expanded" : ""}`}>
+              <button
+                className="sidebar-toggle"
+                onClick={() => setSidebarOpen(!sidebarOpen)}
+                aria-label={
+                  sidebarOpen ? "Collapse sidebar" : "Expand sidebar"
+                }
+              >
+                <span className="sidebar-toggle-handle" />
+              </button>
+              <CollapsibleSection title="Summary">
+                <ResultSummary result={state.result} />
+              </CollapsibleSection>
+              <CollapsibleSection title="Sky Plot">
+                <SkyPlot
+                  snapshots={state.result.satellite_snapshots ?? []}
+                  currentTimeMs={currentTimeMs}
+                />
+              </CollapsibleSection>
+              <CollapsibleSection title="Layers">
+                <div className="layer-controls">
+                  <label className="toggle-label">
+                    地図:
+                    <select
+                      value={imagery}
+                      onChange={(e) =>
+                        setImagery(e.target.value as GsiImageryKey)
+                      }
+                    >
+                      {Object.entries(GSI_IMAGERY).map(([key, { label }]) => (
+                        <option key={key} value={key}>
+                          {label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="toggle-label">
+                    <input
+                      type="checkbox"
+                      checked={showNlp}
+                      onChange={(e) => setShowNlp(e.target.checked)}
+                    />
+                    Show NLP fixes
+                  </label>
+                  <FixQualitySummary result={state.result} />
+                </div>
+              </CollapsibleSection>
             </aside>
           </div>
           <TimeSeriesPanel

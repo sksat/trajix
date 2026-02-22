@@ -1,21 +1,18 @@
 .sky-plot {
-  padding: 8px;
-}
-
-.sky-plot-title {
-  margin: 0 0 4px 0;
-  font-size: 13px;
-  color: #aaa;
+  padding: var(--space-2);
 }
 
 .sky-plot svg {
   display: block;
   margin: 0 auto;
+  width: 100%;
+  max-width: 200px;
+  height: auto;
 }
 
 .sky-label {
   font-size: 10px;
-  fill: #666;
+  fill: var(--text-muted);
   text-anchor: middle;
   dominant-baseline: central;
 }
@@ -29,8 +26,8 @@
 .sky-plot-legend {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 4px;
+  gap: var(--space-2);
+  margin-top: var(--space-1);
   justify-content: center;
 }
 
@@ -38,8 +35,8 @@
   display: flex;
   align-items: center;
   gap: 3px;
-  font-size: 10px;
-  color: #999;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
 }
 
 .legend-dot {
@@ -47,4 +44,10 @@
   height: 6px;
   border-radius: 50%;
   display: inline-block;
+}
+
+@media (max-width: 767px) {
+  .sky-plot svg {
+    max-width: 160px;
+  }
 }

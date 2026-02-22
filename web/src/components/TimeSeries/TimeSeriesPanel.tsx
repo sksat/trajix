@@ -7,6 +7,7 @@
 import { useMemo, useState, useCallback, useRef, useEffect } from "react";
 import type { StatusEpochJs, FixEpochJs } from "../../types/gnss";
 import { UPlotChart } from "./UPlotChart";
+import { ResizeHandle } from "./ResizeHandle";
 import {
   statusEpochsToCn0Data,
   statusEpochsToSatCountData,
@@ -17,6 +18,9 @@ import "./TimeSeriesPanel.css";
 
 const SYNC_KEY = "trajix-ts";
 const CHART_HEIGHT = 150;
+const MIN_PANEL_HEIGHT = 120;
+const MAX_PANEL_HEIGHT = 500;
+const DEFAULT_PANEL_HEIGHT = 200;
 
 interface TimeSeriesPanelProps {
   statusEpochs: StatusEpochJs[];
@@ -32,17 +36,26 @@ export function TimeSeriesPanel({
   onSeek,
 }: TimeSeriesPanelProps) {
   const [collapsed, setCollapsed] = useState(false);
+  const [panelHeight, setPanelHeight] = useState(DEFAULT_PANEL_HEIGHT);
   const containerRef = useRef<HTMLDivElement>(null);
   const [chartWidth, setChartWidth] = useState(400);
 
-  // Observe container width for responsive charts
+  const handleResize = useCallback((delta: number) => {
+    setPanelHeight((h) =>
+      Math.max(MIN_PANEL_HEIGHT, Math.min(MAX_PANEL_HEIGHT, h + delta)),
+    );
+  }, []);
+
+  // Observe container width for responsive chart columns
   useEffect(() => {
     if (!containerRef.current) return;
     const ro = new ResizeObserver((entries) => {
       for (const entry of entries) {
-        // Each chart gets 1/4 of the width (minus padding)
         const totalWidth = entry.contentRect.width;
-        setChartWidth(Math.max(200, Math.floor(totalWidth / 4) - 8));
+        let cols = 4;
+        if (totalWidth < 600) cols = 1;
+        else if (totalWidth < 1000) cols = 2;
+        setChartWidth(Math.max(200, Math.floor(totalWidth / cols) - 8));
       }
     });
     ro.observe(containerRef.current);
@@ -77,7 +90,11 @@ export function TimeSeriesPanel({
   );
 
   return (
-    <div className={`chart-panel ${collapsed ? "collapsed" : ""}`}>
+    <div
+      className={`chart-panel ${collapsed ? "collapsed" : ""}`}
+      style={collapsed ? undefined : { height: panelHeight }}
+    >
+      <ResizeHandle onResize={handleResize} />
       <button
         className="chart-panel-toggle"
         onClick={() => setCollapsed(!collapsed)}

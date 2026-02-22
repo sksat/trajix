@@ -66,12 +66,7 @@ export function SkyPlot({ snapshots, currentTimeMs }: SkyPlotProps) {
 
   return (
     <div className="sky-plot">
-      <h3 className="sky-plot-title">Sky Plot</h3>
-      <svg
-        viewBox={`0 0 ${SVG_SIZE} ${SVG_SIZE}`}
-        width={SVG_SIZE}
-        height={SVG_SIZE}
-      >
+      <svg viewBox={`0 0 ${SVG_SIZE} ${SVG_SIZE}`}>
         {/* Background */}
         <circle
           cx={CENTER}
