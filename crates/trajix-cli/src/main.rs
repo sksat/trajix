@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
 
-use trajix::prelude::*;
 use trajix::geo;
+use trajix::prelude::*;
 
 fn main() {
     let path = std::env::args().nth(1).unwrap_or_else(|| {
@@ -85,11 +85,21 @@ fn analyze_fixes(fixes: &[FixRecord]) {
     let summary = trajix::stats::summarize_fixes(fixes);
     println!("=== Fix Summary ===");
     println!("  Count: {}", summary.count);
-    println!("  Duration: {:.0}s ({:.1} hours)", summary.duration_s, summary.duration_s / 3600.0);
-    println!("  Total distance: {:.0}m ({:.1} km)", summary.total_distance_m, summary.total_distance_m / 1000.0);
+    println!(
+        "  Duration: {:.0}s ({:.1} hours)",
+        summary.duration_s,
+        summary.duration_s / 3600.0
+    );
+    println!(
+        "  Total distance: {:.0}m ({:.1} km)",
+        summary.total_distance_m,
+        summary.total_distance_m / 1000.0
+    );
     if let Some(ref acc) = summary.accuracy {
-        println!("  Accuracy (m): min={:.1}, median={:.1}, p90={:.1}, p95={:.1}, max={:.1}",
-            acc.min, acc.median, acc.p90, acc.p95, acc.max);
+        println!(
+            "  Accuracy (m): min={:.1}, median={:.1}, p90={:.1}, p95={:.1}, max={:.1}",
+            acc.min, acc.median, acc.p90, acc.p95, acc.max
+        );
     }
     for pc in &summary.per_provider {
         println!("  {}: {} fixes", pc.provider.as_str(), pc.count);
@@ -121,17 +131,16 @@ fn analyze_fixes(fixes: &[FixRecord]) {
             let p95 = accuracies[(accuracies.len() as f64 * 0.95) as usize];
             let p99 = accuracies[(accuracies.len() as f64 * 0.99) as usize];
 
-            println!("    Accuracy (m): min={min:.1}, median={median:.1}, p90={p90:.1}, p95={p95:.1}, p99={p99:.1}, max={max:.1}");
+            println!(
+                "    Accuracy (m): min={min:.1}, median={median:.1}, p90={p90:.1}, p95={p95:.1}, p99={p99:.1}, max={max:.1}"
+            );
 
             // Histogram buckets
             let buckets = [5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0];
             print!("    Histogram: ");
             let mut prev = 0.0;
             for &b in &buckets {
-                let count = accuracies
-                    .iter()
-                    .filter(|&&a| a >= prev && a < b)
-                    .count();
+                let count = accuracies.iter().filter(|&&a| a >= prev && a < b).count();
                 if count > 0 {
                     print!("[{prev:.0}-{b:.0}m)={count} ");
                 }
@@ -184,7 +193,11 @@ fn analyze_coverage_gaps(fixes: &[FixRecord]) {
     let t_start = sorted[0].unix_time_ms;
     let t_end = sorted[sorted.len() - 1].unix_time_ms;
     let total_s = (t_end - t_start) as f64 / 1000.0;
-    println!("  Total time span: {:.0}s ({:.1} hours)", total_s, total_s / 3600.0);
+    println!(
+        "  Total time span: {:.0}s ({:.1} hours)",
+        total_s,
+        total_s / 3600.0
+    );
 
     // Find GPS/FLP coverage gaps (periods where no GPS/FLP fix for > threshold)
     let gps_flp: Vec<&FixRecord> = sorted
@@ -241,7 +254,13 @@ fn analyze_coverage_gaps(fixes: &[FixRecord]) {
     gap_durations.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
     if !gap_durations.is_empty() {
-        let buckets = [(5.0, 10.0), (10.0, 30.0), (30.0, 60.0), (60.0, 300.0), (300.0, f64::MAX)];
+        let buckets = [
+            (5.0, 10.0),
+            (10.0, 30.0),
+            (30.0, 60.0),
+            (60.0, 300.0),
+            (300.0, f64::MAX),
+        ];
         let labels = ["5-10s", "10-30s", "30-60s", "1-5min", "5min+"];
         print!("  Gap duration distribution: ");
         for (i, &(lo, hi)) in buckets.iter().enumerate() {
@@ -293,7 +312,9 @@ fn analyze_coverage_gaps(fixes: &[FixRecord]) {
             let median = gap_accs[gap_accs.len() / 2];
             let min = gap_accs[0];
             let max = gap_accs[gap_accs.len() - 1];
-            println!("    NLP accuracy during gaps: min={min:.0}m, median={median:.0}m, max={max:.0}m");
+            println!(
+                "    NLP accuracy during gaps: min={min:.0}m, median={median:.0}m, max={max:.0}m"
+            );
         }
     }
 
@@ -423,8 +444,7 @@ fn analyze_jumps_ref(fixes: &[&FixRecord]) {
             );
             println!(
                 "      {speed:>10.1} km/h  dist={dist_m:>10.1}m  dt={dt_s:>6.1}s  {:?}→{:?}  acc={:?}→{:?}",
-                prev.provider, curr.provider,
-                prev.accuracy_m, curr.accuracy_m,
+                prev.provider, curr.provider, prev.accuracy_m, curr.accuracy_m,
             );
         }
     }
@@ -447,7 +467,10 @@ fn analyze_altitude(fixes: &[FixRecord]) {
     println!("  Primary fixes with altitude: {}", primary.len());
 
     // --- Vertical accuracy distribution ---
-    let mut vert_accs: Vec<f64> = primary.iter().filter_map(|f| f.vertical_accuracy_m).collect();
+    let mut vert_accs: Vec<f64> = primary
+        .iter()
+        .filter_map(|f| f.vertical_accuracy_m)
+        .collect();
     vert_accs.sort_by(|a, b| a.partial_cmp(b).unwrap());
     if !vert_accs.is_empty() {
         let n = vert_accs.len();
@@ -469,19 +492,22 @@ fn analyze_altitude(fixes: &[FixRecord]) {
     let alts: Vec<f64> = primary.iter().map(|f| f.altitude_m.unwrap()).collect();
     let alt_min = alts.iter().cloned().fold(f64::INFINITY, f64::min);
     let alt_max = alts.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-    println!("  Altitude range: {alt_min:.1}m .. {alt_max:.1}m (span={:.1}m)", alt_max - alt_min);
+    println!(
+        "  Altitude range: {alt_min:.1}m .. {alt_max:.1}m (span={:.1}m)",
+        alt_max - alt_min
+    );
 
     // --- Vertical velocity between consecutive fixes ---
     struct VJump {
         idx: usize,
-        vv: f64,       // vertical velocity (m/s), signed
+        vv: f64, // vertical velocity (m/s), signed
         dt_s: f64,
         d_alt: f64,
         vert_acc_before: Option<f64>,
         vert_acc_after: Option<f64>,
         alt_before: f64,
         alt_after: f64,
-        t_offset_s: f64,
+        _t_offset_s: f64,
     }
 
     let t_start = primary[0].unix_time_ms;
@@ -505,7 +531,7 @@ fn analyze_altitude(fixes: &[FixRecord]) {
             vert_acc_after: curr.vertical_accuracy_m,
             alt_before: prev.altitude_m.unwrap(),
             alt_after: curr.altitude_m.unwrap(),
-            t_offset_s: (prev.unix_time_ms - t_start) as f64 / 1000.0,
+            _t_offset_s: (prev.unix_time_ms - t_start) as f64 / 1000.0,
         });
     }
 
@@ -539,7 +565,10 @@ fn analyze_altitude(fixes: &[FixRecord]) {
 
     let n_show = worst.len().min(15);
     println!("\n  Top {n_show} worst vertical jumps:");
-    println!("    {:>8} {:>8} {:>8} {:>10} {:>10} {:>8}", "vv(m/s)", "Δalt(m)", "dt(s)", "alt_before", "alt_after", "vert_acc");
+    println!(
+        "    {:>8} {:>8} {:>8} {:>10} {:>10} {:>8}",
+        "vv(m/s)", "Δalt(m)", "dt(s)", "alt_before", "alt_after", "vert_acc"
+    );
     for j in worst.iter().take(n_show) {
         println!(
             "    {:>8.1} {:>8.1} {:>8.1} {:>10.1} {:>10.1} {:>8}",
@@ -579,10 +608,7 @@ fn analyze_altitude(fixes: &[FixRecord]) {
         let abs_diffs: Vec<f64> = alt_diffs_gps_flp.iter().map(|d| d.abs()).collect();
         let mut abs_sorted = abs_diffs.clone();
         abs_sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        println!(
-            "\n  GPS↔FLP provider switches: {} transitions",
-            n,
-        );
+        println!("\n  GPS↔FLP provider switches: {} transitions", n,);
         println!(
             "    |Δalt| at provider switch: median={:.1}m, p90={:.1}m, p95={:.1}m, max={:.1}m",
             abs_sorted[n / 2],
@@ -596,10 +622,20 @@ fn analyze_altitude(fixes: &[FixRecord]) {
     if !gps_alts.is_empty() && !flp_alts.is_empty() {
         gps_alts.sort_by(|a, b| a.partial_cmp(b).unwrap());
         flp_alts.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        println!("    GPS altitude: min={:.1}, median={:.1}, max={:.1} (n={})",
-            gps_alts[0], gps_alts[gps_alts.len()/2], gps_alts[gps_alts.len()-1], gps_alts.len());
-        println!("    FLP altitude: min={:.1}, median={:.1}, max={:.1} (n={})",
-            flp_alts[0], flp_alts[flp_alts.len()/2], flp_alts[flp_alts.len()-1], flp_alts.len());
+        println!(
+            "    GPS altitude: min={:.1}, median={:.1}, max={:.1} (n={})",
+            gps_alts[0],
+            gps_alts[gps_alts.len() / 2],
+            gps_alts[gps_alts.len() - 1],
+            gps_alts.len()
+        );
+        println!(
+            "    FLP altitude: min={:.1}, median={:.1}, max={:.1} (n={})",
+            flp_alts[0],
+            flp_alts[flp_alts.len() / 2],
+            flp_alts[flp_alts.len() - 1],
+            flp_alts.len()
+        );
     }
 
     // --- Spike segment analysis ---
@@ -646,17 +682,27 @@ fn analyze_altitude(fixes: &[FixRecord]) {
         spike_indices.len(),
     );
     if !segments.is_empty() {
-        println!("    {:>8} {:>8} {:>10} {:>10} {:>12}", "start", "end", "points", "t_offset", "alt_range");
+        println!(
+            "    {:>8} {:>8} {:>10} {:>10} {:>12}",
+            "start", "end", "points", "t_offset", "alt_range"
+        );
         for (s, e) in segments.iter().take(20) {
             let alts_in_seg: Vec<f64> = (*s..=*e).map(|i| primary[i].altitude_m.unwrap()).collect();
             let seg_min = alts_in_seg.iter().cloned().fold(f64::INFINITY, f64::min);
-            let seg_max = alts_in_seg.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+            let seg_max = alts_in_seg
+                .iter()
+                .cloned()
+                .fold(f64::NEG_INFINITY, f64::max);
             let t_off = (primary[*s].unix_time_ms - t_start) as f64 / 1000.0;
             println!(
                 "    {:>8} {:>8} {:>10} {:>9.0}s {:>5.0}-{:.0}m",
-                s, e, e - s + 1, t_off, seg_min, seg_max,
+                s,
+                e,
+                e - s + 1,
+                t_off,
+                seg_min,
+                seg_max,
             );
         }
     }
 }
-

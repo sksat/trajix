@@ -2,7 +2,7 @@ use std::io::BufRead;
 
 use crate::error::ParseError;
 use crate::parser::header::HeaderInfo;
-use crate::parser::line::{parse_line, Record};
+use crate::parser::line::{Record, parse_line};
 
 /// Streaming parser for GNSS Logger files.
 ///
@@ -111,10 +111,7 @@ mod tests {
     use crate::types::FixProvider;
 
     fn load_fixture(name: &str) -> String {
-        let path = format!(
-            "{}/tests/fixtures/{name}",
-            env!("CARGO_MANIFEST_DIR")
-        );
+        let path = format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"));
         std::fs::read_to_string(path).unwrap()
     }
 
@@ -138,9 +135,7 @@ mod tests {
         let content = load_fixture("mixed_records.txt");
         let parser = StreamingParser::new(content.as_bytes());
 
-        let records: Vec<_> = parser
-            .map(|r| r.expect("should parse"))
-            .collect();
+        let records: Vec<_> = parser.map(|r| r.expect("should parse")).collect();
 
         // mixed_records.txt has 100 data lines (no skipped types)
         assert_eq!(records.len(), 100);
@@ -189,9 +184,7 @@ mod tests {
         let content = load_fixture("mixed_records.txt");
         let parser = StreamingParser::new(content.as_bytes());
 
-        let records: Vec<_> = parser
-            .map(|r| r.unwrap())
-            .collect();
+        let records: Vec<_> = parser.map(|r| r.unwrap()).collect();
 
         // First 6 should be Status (from fixture)
         for r in &records[..6] {

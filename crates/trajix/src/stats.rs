@@ -147,7 +147,13 @@ fn percentiles(sorted: &[f64]) -> PercentileStats {
 mod tests {
     use super::*;
 
-    fn make_fix(provider: FixProvider, lat: f64, lon: f64, time_ms: i64, accuracy: Option<f64>) -> FixRecord {
+    fn make_fix(
+        provider: FixProvider,
+        lat: f64,
+        lon: f64,
+        time_ms: i64,
+        accuracy: Option<f64>,
+    ) -> FixRecord {
         FixRecord {
             provider,
             latitude_deg: lat,
@@ -233,7 +239,15 @@ mod tests {
     #[test]
     fn accuracy_percentiles() {
         let fixes: Vec<_> = (0..100)
-            .map(|i| make_fix(FixProvider::Gps, 36.0, 140.0, i * 1000, Some(i as f64 + 1.0)))
+            .map(|i| {
+                make_fix(
+                    FixProvider::Gps,
+                    36.0,
+                    140.0,
+                    i * 1000,
+                    Some(i as f64 + 1.0),
+                )
+            })
             .collect();
         let stats = summarize_fixes(&fixes);
         let acc = stats.accuracy.unwrap();

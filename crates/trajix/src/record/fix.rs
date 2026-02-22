@@ -133,10 +133,7 @@ mod tests {
     use super::*;
 
     fn load_fixture(name: &str) -> String {
-        let path = format!(
-            "{}/tests/fixtures/{name}",
-            env!("CARGO_MANIFEST_DIR")
-        );
+        let path = format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"));
         std::fs::read_to_string(path).unwrap()
     }
 
@@ -341,7 +338,10 @@ mod tests {
         let a = make_fix(36.0, 140.0, 0);
         let b = make_fix(36.001, 140.0, 1000);
         let speed = a.speed_between(&b).unwrap();
-        assert!((speed - 111.0).abs() < 2.0, "expected ~111 m/s, got {speed:.1}");
+        assert!(
+            (speed - 111.0).abs() < 2.0,
+            "expected ~111 m/s, got {speed:.1}"
+        );
     }
 
     #[test]
@@ -370,7 +370,10 @@ mod tests {
             let b = FixRecord::parse(lines[1]).unwrap();
             let dist = a.distance_to(&b);
             // Consecutive fixes should be close (< 100m typically)
-            assert!(dist < 10000.0, "consecutive fixes should be close, got {dist:.1}m");
+            assert!(
+                dist < 10000.0,
+                "consecutive fixes should be close, got {dist:.1}m"
+            );
         }
     }
 }

@@ -74,9 +74,7 @@ mod tests {
 
     /// Parse lines into records, filtering out blanks/comments.
     fn parse_lines(text: &str) -> Vec<Result<Record, ParseError>> {
-        text.lines()
-            .filter_map(|line| parse_line(line))
-            .collect()
+        text.lines().filter_map(parse_line).collect()
     }
 
     #[test]
@@ -150,7 +148,10 @@ Status,,46,1,3,9,1600875010,28.40,10.0,45.0,1,1,1,21.0";
         assert_eq!(annotated.len(), 1);
         match &annotated[0] {
             Record::Status(s) => {
-                assert!(s.unix_time_ms.is_none(), "no preceding record to infer from");
+                assert!(
+                    s.unix_time_ms.is_none(),
+                    "no preceding record to infer from"
+                );
             }
             _ => panic!("expected Status"),
         }

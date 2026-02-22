@@ -199,15 +199,8 @@ impl DeadReckoning {
     /// Returns `Some(DrPoint)` with `source: DeadReckoning` when DR is active
     /// and a new position estimate is produced.
     pub fn push_accel(&mut self, accel: &UncalibratedSensorRecord) -> Option<DrPoint> {
-        let attitude = match self.attitude {
-            Some(q) => q,
-            None => return None,
-        };
-
-        let state = match &mut self.state {
-            Some(s) => s,
-            None => return None,
-        };
+        let attitude = self.attitude?;
+        let state = self.state.as_mut()?;
 
         // Check max duration
         if accel.utc_time_ms - state.dr_start_ms > self.config.max_dr_duration_ms {
@@ -365,7 +358,9 @@ mod tests {
         // Phone flat, screen up, top north → identity quaternion
         // Accel reads (0, 0, +g) → ENU should be (0, 0, +g)
         let q = UnitQuaternion::identity();
-        let a_enu = q.conjugate().transform_vector(&Vector3::new(0.0, 0.0, GRAVITY_MS2));
+        let a_enu = q
+            .conjugate()
+            .transform_vector(&Vector3::new(0.0, 0.0, GRAVITY_MS2));
         assert!(approx_eq(a_enu.x, 0.0, 1e-10));
         assert!(approx_eq(a_enu.y, 0.0, 1e-10));
         assert!(approx_eq(a_enu.z, GRAVITY_MS2, 1e-10));
@@ -379,7 +374,9 @@ mod tests {
         let q = quat((angle / 2.0).sin(), 0.0, 0.0, (angle / 2.0).cos());
 
         // Device accel: (0, +g, 0) (gravity along top edge = Up)
-        let a_enu = q.conjugate().transform_vector(&Vector3::new(0.0, GRAVITY_MS2, 0.0));
+        let a_enu = q
+            .conjugate()
+            .transform_vector(&Vector3::new(0.0, GRAVITY_MS2, 0.0));
         assert!(approx_eq(a_enu.x, 0.0, 1e-10));
         assert!(approx_eq(a_enu.y, 0.0, 1e-10));
         assert!(approx_eq(a_enu.z, GRAVITY_MS2, 1e-10));
@@ -611,8 +608,8 @@ mod tests {
         let traj = dr.finalize();
         let last_dr = traj
             .iter()
-            .filter(|p| p.source == DrSource::DeadReckoning)
-            .last()
+            .rev()
+            .find(|p| p.source == DrSource::DeadReckoning)
             .unwrap();
 
         // ~10m east in 1 second
@@ -681,10 +678,12 @@ mod tests {
 
         // Post-gap points should be nearly stationary relative to each other
         if after.len() >= 2 {
-            let spread = (after.last().unwrap().longitude_deg
-                - after.first().unwrap().longitude_deg)
-                .abs();
-            assert!(spread < 1e-6, "should be stationary after gap, spread={spread}");
+            let spread =
+                (after.last().unwrap().longitude_deg - after.first().unwrap().longitude_deg).abs();
+            assert!(
+                spread < 1e-6,
+                "should be stationary after gap, spread={spread}"
+            );
         }
     }
 
@@ -694,7 +693,9 @@ mod tests {
 
         dr.push(&Record::Fix(make_fix(1000, 5.0, Some(0.0), None)));
         dr.push(&Record::Fix(make_fix(2000, 50.0, None, None)));
-        dr.push(&Record::GameRotationVector(make_grv(2000, 0.0, 0.0, 0.0, 1.0)));
+        dr.push(&Record::GameRotationVector(make_grv(
+            2000, 0.0, 0.0, 0.0, 1.0,
+        )));
         dr.push(&Record::UncalAccel(make_accel(2010, 0.0, 0.0, GRAVITY_MS2)));
         dr.push(&Record::Skipped); // ignored
 
@@ -742,7 +743,10 @@ mod tests {
         let mut dr = DeadReckoning::new(DrConfig::default());
         // No fix at all — accel should return None
         dr.push_attitude(&make_grv(1000, 0.0, 0.0, 0.0, 1.0));
-        assert!(dr.push_accel(&make_accel(1010, 0.0, 0.0, GRAVITY_MS2)).is_none());
+        assert!(
+            dr.push_accel(&make_accel(1010, 0.0, 0.0, GRAVITY_MS2))
+                .is_none()
+        );
     }
 
     #[test]
@@ -756,7 +760,9 @@ mod tests {
     #[test]
     fn push_returns_none_for_attitude() {
         let mut dr = DeadReckoning::new(DrConfig::default());
-        let result = dr.push(&Record::GameRotationVector(make_grv(1000, 0.0, 0.0, 0.0, 1.0)));
+        let result = dr.push(&Record::GameRotationVector(make_grv(
+            1000, 0.0, 0.0, 0.0, 1.0,
+        )));
         assert!(result.is_none());
     }
 

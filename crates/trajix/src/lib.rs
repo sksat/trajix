@@ -39,13 +39,13 @@ pub mod types;
 pub use error::ParseError;
 pub use parser::filter::FilterRecords;
 pub use parser::header::HeaderInfo;
-pub use parser::line::{parse_line, Record};
+pub use parser::line::{Record, parse_line};
 pub use parser::streaming::StreamingParser;
+pub use quality::{DEFAULT_GAP_THRESHOLD_MS, FixQuality, classify_fixes};
 pub use record::fix::FixRecord;
 pub use record::raw::RawRecord;
 pub use record::sensor::{GameRotationVectorRecord, OrientationRecord, UncalibratedSensorRecord};
 pub use record::status::StatusRecord;
-pub use quality::{classify_fixes, FixQuality, DEFAULT_GAP_THRESHOLD_MS};
 pub use summary::{ConstellationStats, EpochAggregator, FixEpoch, StatusEpoch};
 pub use types::{CodeType, ConstellationType, FixProvider, RecordType};
 
@@ -54,12 +54,11 @@ pub use dead_reckoning::{DeadReckoning, DrConfig, DrPoint, DrSource};
 
 // Downsampling
 pub use downsample::{
-    decimate_by_time, lttb, lttb_indices, DecimatedSample, LttbValue, Sample,
-    StreamingDecimator,
+    DecimatedSample, LttbValue, Sample, StreamingDecimator, decimate_by_time, lttb, lttb_indices,
 };
 
 // Statistics
-pub use stats::{summarize_fixes, FixStats, PercentileStats, ProviderCount};
+pub use stats::{FixStats, PercentileStats, ProviderCount, summarize_fixes};
 
 /// Convenience re-exports for common usage patterns.
 ///

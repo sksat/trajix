@@ -5,7 +5,9 @@ pub enum ParseError {
     #[error("unknown record type: {0}")]
     UnknownRecordType(String),
 
-    #[error("wrong number of fields: expected {expected}, got {actual} (record type: {record_type})")]
+    #[error(
+        "wrong number of fields: expected {expected}, got {actual} (record type: {record_type})"
+    )]
     FieldCount {
         record_type: &'static str,
         expected: usize,

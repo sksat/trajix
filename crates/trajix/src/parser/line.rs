@@ -8,6 +8,7 @@ use crate::record::status::StatusRecord;
 
 /// A parsed GNSS Logger record.
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum Record {
     Fix(FixRecord),
     Status(StatusRecord),
@@ -32,9 +33,9 @@ impl Record {
             Record::Fix(r) => Some(r.unix_time_ms),
             Record::Raw(r) => Some(r.utc_time_ms),
             Record::Status(r) => r.unix_time_ms,
-            Record::UncalAccel(r)
-            | Record::UncalGyro(r)
-            | Record::UncalMag(r) => Some(r.utc_time_ms),
+            Record::UncalAccel(r) | Record::UncalGyro(r) | Record::UncalMag(r) => {
+                Some(r.utc_time_ms)
+            }
             Record::OrientationDeg(r) => Some(r.utc_time_ms),
             Record::GameRotationVector(r) => Some(r.utc_time_ms),
             Record::Skipped => None,
@@ -61,9 +62,7 @@ impl Record {
 }
 
 /// Record types that are recognized but skipped (no parser needed).
-const SKIPPED_PREFIXES: &[&str] = &[
-    "Nav,", "Agc,", "Accel,", "Gyro,", "Mag,", "Pressure,",
-];
+const SKIPPED_PREFIXES: &[&str] = &["Nav,", "Agc,", "Accel,", "Gyro,", "Mag,", "Pressure,"];
 
 /// Parse a single CSV line into a typed Record.
 ///
@@ -85,27 +84,15 @@ pub fn parse_line(line: &str) -> Option<Result<Record, ParseError>> {
     } else if line.starts_with("Raw,") {
         Some(RawRecord::parse(line).map(Record::Raw))
     } else if line.starts_with("UncalAccel,") {
-        Some(
-            UncalibratedSensorRecord::parse(line, "UncalAccel")
-                .map(Record::UncalAccel),
-        )
+        Some(UncalibratedSensorRecord::parse(line, "UncalAccel").map(Record::UncalAccel))
     } else if line.starts_with("UncalGyro,") {
-        Some(
-            UncalibratedSensorRecord::parse(line, "UncalGyro")
-                .map(Record::UncalGyro),
-        )
+        Some(UncalibratedSensorRecord::parse(line, "UncalGyro").map(Record::UncalGyro))
     } else if line.starts_with("UncalMag,") {
-        Some(
-            UncalibratedSensorRecord::parse(line, "UncalMag")
-                .map(Record::UncalMag),
-        )
+        Some(UncalibratedSensorRecord::parse(line, "UncalMag").map(Record::UncalMag))
     } else if line.starts_with("OrientationDeg,") {
         Some(OrientationRecord::parse(line).map(Record::OrientationDeg))
     } else if line.starts_with("GameRotationVector,") {
-        Some(
-            GameRotationVectorRecord::parse(line)
-                .map(Record::GameRotationVector),
-        )
+        Some(GameRotationVectorRecord::parse(line).map(Record::GameRotationVector))
     } else if SKIPPED_PREFIXES.iter().any(|p| line.starts_with(p)) {
         Some(Ok(Record::Skipped))
     } else {
@@ -121,10 +108,7 @@ mod tests {
     use crate::types::{ConstellationType, FixProvider};
 
     fn load_fixture(name: &str) -> String {
-        let path = format!(
-            "{}/tests/fixtures/{name}",
-            env!("CARGO_MANIFEST_DIR")
-        );
+        let path = format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"));
         std::fs::read_to_string(path).unwrap()
     }
 
@@ -220,7 +204,10 @@ mod tests {
     #[test]
     fn unknown_record_type() {
         let result = parse_line("Unknown,field1,field2");
-        assert!(matches!(result, Some(Err(ParseError::UnknownRecordType(_)))));
+        assert!(matches!(
+            result,
+            Some(Err(ParseError::UnknownRecordType(_)))
+        ));
     }
 
     #[derive(Default)]
@@ -252,9 +239,15 @@ mod tests {
         }
 
         fn total(&self) -> usize {
-            self.fix + self.status + self.raw
-                + self.uncal_accel + self.uncal_gyro + self.uncal_mag
-                + self.orientation + self.game_rotation + self.skipped
+            self.fix
+                + self.status
+                + self.raw
+                + self.uncal_accel
+                + self.uncal_gyro
+                + self.uncal_mag
+                + self.orientation
+                + self.game_rotation
+                + self.skipped
         }
     }
 }

@@ -170,18 +170,18 @@ pub fn lttb<V: LttbValue>(samples: &[Sample<V>], target_count: usize) -> Vec<Sam
         let mut max_area = -1.0f64;
         let mut max_idx = bucket_start;
 
-        for i in bucket_start..bucket_end {
+        for (i, sample) in samples[bucket_start..bucket_end].iter().enumerate() {
             let area = triangle_area(
                 prev_x,
                 prev_y,
-                samples[i].time_ms as f64,
-                samples[i].value.to_f64(),
+                sample.time_ms as f64,
+                sample.value.to_f64(),
                 avg_x,
                 avg_y,
             );
             if area > max_area {
                 max_area = area;
-                max_idx = i;
+                max_idx = bucket_start + i;
             }
         }
 
@@ -245,18 +245,18 @@ pub fn lttb_indices<V: LttbValue>(samples: &[Sample<V>], target_count: usize) ->
         let mut max_area = -1.0f64;
         let mut max_idx = bucket_start;
 
-        for i in bucket_start..bucket_end {
+        for (i, sample) in samples[bucket_start..bucket_end].iter().enumerate() {
             let area = triangle_area(
                 prev_x,
                 prev_y,
-                samples[i].time_ms as f64,
-                samples[i].value.to_f64(),
+                sample.time_ms as f64,
+                sample.value.to_f64(),
                 avg_x,
                 avg_y,
             );
             if area > max_area {
                 max_area = area;
-                max_idx = i;
+                max_idx = bucket_start + i;
             }
         }
 
@@ -505,7 +505,9 @@ mod tests {
         // Every output sample must exist in input
         for r in &result {
             assert!(
-                samples.iter().any(|s| s.time_ms == r.time_ms && s.value == r.value),
+                samples
+                    .iter()
+                    .any(|s| s.time_ms == r.time_ms && s.value == r.value),
                 "output sample t={} v={} not found in input",
                 r.time_ms,
                 r.value
@@ -711,7 +713,10 @@ mod tests {
         let result = lttb(&samples, 20);
 
         // Check that max and min of result are close to 1.0 and -1.0
-        let max_val = result.iter().map(|s| s.value).fold(f64::NEG_INFINITY, f64::max);
+        let max_val = result
+            .iter()
+            .map(|s| s.value)
+            .fold(f64::NEG_INFINITY, f64::max);
         let min_val = result.iter().map(|s| s.value).fold(f64::INFINITY, f64::min);
 
         assert!(
@@ -857,7 +862,7 @@ mod tests {
         for window in result[1..result.len() - 1].windows(2) {
             let gap = window[1].time_ms - window[0].time_ms;
             assert!(
-                gap >= 80 && gap <= 200,
+                (80..=200).contains(&gap),
                 "unexpected gap {gap} between t={} and t={}",
                 window[0].time_ms,
                 window[1].time_ms
@@ -904,11 +909,11 @@ mod tests {
         // Bin 1 = [1100, 1200), center at 1150
         // Place samples at 1110, 1148, 1190 → 1148 is closest to center 1150
         let samples = make_samples(&[
-            (1000, 0.0),  // first (always kept, bin 0)
-            (1110, 1.0),  // bin 1, distance to 1150 = 40
-            (1148, 2.0),  // bin 1, distance to 1150 = 2 (closest)
-            (1190, 3.0),  // bin 1, distance to 1150 = 40
-            (2000, 4.0),  // last (always kept)
+            (1000, 0.0), // first (always kept, bin 0)
+            (1110, 1.0), // bin 1, distance to 1150 = 40
+            (1148, 2.0), // bin 1, distance to 1150 = 2 (closest)
+            (1190, 3.0), // bin 1, distance to 1150 = 40
+            (2000, 4.0), // last (always kept)
         ]);
 
         let result = decimate_by_time(&samples, 100);

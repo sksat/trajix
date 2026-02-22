@@ -49,8 +49,7 @@ impl StatusRecord {
 
         let unix_time_ms = parse_optional_i64(fields[1]);
 
-        let constellation_u8 =
-            parse_u32(fields[4], "ConstellationType")? as u8;
+        let constellation_u8 = parse_u32(fields[4], "ConstellationType")? as u8;
         let constellation = ConstellationType::from_u8(constellation_u8);
 
         Ok(StatusRecord {
@@ -98,10 +97,7 @@ mod tests {
     use super::*;
 
     fn load_fixture(name: &str) -> String {
-        let path = format!(
-            "{}/tests/fixtures/{name}",
-            env!("CARGO_MANIFEST_DIR")
-        );
+        let path = format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"));
         std::fs::read_to_string(path).unwrap()
     }
 

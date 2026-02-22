@@ -78,6 +78,7 @@ pub enum FixProvider {
 }
 
 impl FixProvider {
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "GPS" => Some(Self::Gps),
@@ -116,6 +117,7 @@ pub enum CodeType {
 }
 
 impl CodeType {
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "C" => Some(Self::C),
@@ -143,6 +145,7 @@ pub enum RecordType {
 }
 
 impl RecordType {
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "Raw" => Some(Self::Raw),
@@ -253,8 +256,16 @@ mod tests {
     #[test]
     fn record_type_roundtrip() {
         let cases = [
-            "Raw", "Fix", "Status", "UncalAccel", "UncalGyro", "UncalMag",
-            "OrientationDeg", "GameRotationVector", "Nav", "Agc",
+            "Raw",
+            "Fix",
+            "Status",
+            "UncalAccel",
+            "UncalGyro",
+            "UncalMag",
+            "OrientationDeg",
+            "GameRotationVector",
+            "Nav",
+            "Agc",
         ];
         for s in cases {
             let rt = RecordType::from_str(s).unwrap();

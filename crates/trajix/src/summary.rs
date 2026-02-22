@@ -129,12 +129,14 @@ fn compute_status_epoch(time_ms: i64, records: &[&StatusRecord]) -> StatusEpoch 
 
     let constellations = by_constellation
         .values()
-        .map(|&(constellation, cn0_sum, visible, used)| ConstellationStats {
-            constellation,
-            cn0_mean: cn0_sum / visible as f64,
-            visible,
-            used_in_fix: used,
-        })
+        .map(
+            |&(constellation, cn0_sum, visible, used)| ConstellationStats {
+                constellation,
+                cn0_mean: cn0_sum / visible as f64,
+                visible,
+                used_in_fix: used,
+            },
+        )
         .collect();
 
     StatusEpoch {
@@ -271,22 +273,22 @@ impl EpochAggregator {
     }
 
     fn flush_status(&mut self) {
-        if let Some(bin) = self.status_bin {
-            if !self.status_buf.is_empty() {
-                let refs: Vec<&StatusRecord> = self.status_buf.iter().collect();
-                self.status_epochs.push(compute_status_epoch(bin, &refs));
-                self.status_buf.clear();
-            }
+        if let Some(bin) = self.status_bin
+            && !self.status_buf.is_empty()
+        {
+            let refs: Vec<&StatusRecord> = self.status_buf.iter().collect();
+            self.status_epochs.push(compute_status_epoch(bin, &refs));
+            self.status_buf.clear();
         }
     }
 
     fn flush_fix(&mut self) {
-        if let Some(bin) = self.fix_bin {
-            if !self.fix_buf.is_empty() {
-                let refs: Vec<&FixRecord> = self.fix_buf.iter().collect();
-                self.fix_epochs.push(compute_fix_epoch(bin, &refs));
-                self.fix_buf.clear();
-            }
+        if let Some(bin) = self.fix_bin
+            && !self.fix_buf.is_empty()
+        {
+            let refs: Vec<&FixRecord> = self.fix_buf.iter().collect();
+            self.fix_epochs.push(compute_fix_epoch(bin, &refs));
+            self.fix_buf.clear();
         }
     }
 }
@@ -451,9 +453,7 @@ mod tests {
 
     #[test]
     fn status_skips_no_timestamp() {
-        let mut records = vec![
-            make_status(1000, ConstellationType::Gps, 1, 30.0, true),
-        ];
+        let mut records = vec![make_status(1000, ConstellationType::Gps, 1, 30.0, true)];
         records.push(StatusRecord {
             unix_time_ms: None,
             signal_count: 0,
@@ -569,7 +569,12 @@ mod tests {
             20.0,
             false,
         )));
-        agg.push(Record::Fix(make_fix(1050, Some(5.0), Some(3.0), Some(10.0))));
+        agg.push(Record::Fix(make_fix(
+            1050,
+            Some(5.0),
+            Some(3.0),
+            Some(10.0),
+        )));
 
         // New epoch
         agg.push(Record::Status(make_status(
@@ -579,7 +584,12 @@ mod tests {
             35.0,
             true,
         )));
-        agg.push(Record::Fix(make_fix(2050, Some(8.0), Some(4.0), Some(20.0))));
+        agg.push(Record::Fix(make_fix(
+            2050,
+            Some(8.0),
+            Some(4.0),
+            Some(20.0),
+        )));
 
         let (status, fix) = agg.finalize();
         assert_eq!(status.len(), 2);

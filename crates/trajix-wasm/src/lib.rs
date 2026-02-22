@@ -5,7 +5,7 @@ use wasm_bindgen::prelude::*;
 use trajix::dead_reckoning::{DeadReckoning, DrConfig, DrSource};
 use trajix::downsample::{DecimatedSample, StreamingDecimator};
 use trajix::parser::header::HeaderInfo;
-use trajix::parser::line::{parse_line, Record};
+use trajix::parser::line::{Record, parse_line};
 use trajix::record::fix::FixRecord;
 use trajix::summary::EpochAggregator;
 
@@ -126,6 +126,12 @@ const DEFAULT_EPOCH_MS: i64 = 1000;
 /// Default sensor decimation interval: 100ms (100Hz → 10Hz).
 const SENSOR_DECIMATE_MS: i64 = 100;
 
+impl Default for GnssLogProcessor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[wasm_bindgen]
 impl GnssLogProcessor {
     #[wasm_bindgen(constructor)]
@@ -213,7 +219,7 @@ impl GnssLogProcessor {
             let line = String::from_utf8_lossy(&remaining);
             let line = line.trim_end_matches('\r');
             if !line.is_empty() {
-                self.process_line(&line);
+                self.process_line(line);
                 self.lines_parsed += 1;
             }
         }
@@ -732,7 +738,7 @@ mod tests {
         // ~10 decimated samples (100Hz / 10 = 10Hz)
         let count = proc.accel_decimator.output_count();
         assert!(
-            count >= 9 && count <= 12,
+            (9..=12).contains(&count),
             "expected ~10 decimated samples, got {count}"
         );
     }
@@ -747,7 +753,8 @@ mod tests {
         assert_eq!(proc.fix_count, 1);
 
         // Feed a degraded Fix (accuracy > 30m, triggers DR)
-        let fix2 = b"Fix,GPS,36.212,140.097,281.3,0.0,50.0,,1771641750000,,,2091907471128467,30.0,0,,,\n";
+        let fix2 =
+            b"Fix,GPS,36.212,140.097,281.3,0.0,50.0,,1771641750000,,,2091907471128467,30.0,0,,,\n";
         proc.feed(fix2);
         assert_eq!(proc.fix_count, 2);
     }

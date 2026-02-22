@@ -75,15 +75,15 @@ impl<I> TimeFilter<I> {
     fn is_in_range(&self, record: &Record) -> bool {
         match record.timestamp_ms() {
             Some(ts) => {
-                if let Some(start) = self.start_ms {
-                    if ts < start {
-                        return false;
-                    }
+                if let Some(start) = self.start_ms
+                    && ts < start
+                {
+                    return false;
                 }
-                if let Some(end) = self.end_ms {
-                    if ts > end {
-                        return false;
-                    }
+                if let Some(end) = self.end_ms
+                    && ts > end
+                {
+                    return false;
                 }
                 true
             }

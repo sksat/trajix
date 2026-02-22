@@ -121,19 +121,34 @@ impl RawRecord {
             bias_nanos: parse_f64(fields[6], "BiasNanos")?,
             bias_uncertainty_nanos: parse_f64(fields[7], "BiasUncertaintyNanos")?,
             drift_nanos_per_second: parse_f64(fields[8], "DriftNanosPerSecond")?,
-            drift_uncertainty_nanos_per_second: parse_f64(fields[9], "DriftUncertaintyNanosPerSecond")?,
-            hardware_clock_discontinuity_count: parse_i32(fields[10], "HardwareClockDiscontinuityCount")?,
+            drift_uncertainty_nanos_per_second: parse_f64(
+                fields[9],
+                "DriftUncertaintyNanosPerSecond",
+            )?,
+            hardware_clock_discontinuity_count: parse_i32(
+                fields[10],
+                "HardwareClockDiscontinuityCount",
+            )?,
             svid: parse_u32(fields[11], "Svid")?,
             time_offset_nanos: parse_f64(fields[12], "TimeOffsetNanos")?,
             state: parse_u32(fields[13], "State")?,
             received_sv_time_nanos: parse_i64(fields[14], "ReceivedSvTimeNanos")?,
-            received_sv_time_uncertainty_nanos: parse_i64(fields[15], "ReceivedSvTimeUncertaintyNanos")?,
+            received_sv_time_uncertainty_nanos: parse_i64(
+                fields[15],
+                "ReceivedSvTimeUncertaintyNanos",
+            )?,
             cn0_dbhz: parse_f64(fields[16], "Cn0DbHz")?,
             pseudorange_rate_mps: parse_f64(fields[17], "PseudorangeRateMetersPerSecond")?,
-            pseudorange_rate_uncertainty_mps: parse_f64(fields[18], "PseudorangeRateUncertaintyMetersPerSecond")?,
+            pseudorange_rate_uncertainty_mps: parse_f64(
+                fields[18],
+                "PseudorangeRateUncertaintyMetersPerSecond",
+            )?,
             accumulated_delta_range_state: parse_u32(fields[19], "AccumulatedDeltaRangeState")?,
             accumulated_delta_range_meters: parse_f64(fields[20], "AccumulatedDeltaRangeMeters")?,
-            accumulated_delta_range_uncertainty_meters: parse_f64(fields[21], "AccumulatedDeltaRangeUncertaintyMeters")?,
+            accumulated_delta_range_uncertainty_meters: parse_f64(
+                fields[21],
+                "AccumulatedDeltaRangeUncertaintyMeters",
+            )?,
             carrier_frequency_hz: parse_optional_f64(fields[22]),
             carrier_cycles: parse_optional_i64(fields[23]),
             carrier_phase: parse_optional_f64(fields[24]),
@@ -147,7 +162,11 @@ impl RawRecord {
             full_inter_signal_bias_uncertainty_nanos: parse_optional_f64(fields[32]),
             satellite_inter_signal_bias_nanos: parse_optional_f64(fields[33]),
             satellite_inter_signal_bias_uncertainty_nanos: parse_optional_f64(fields[34]),
-            code_type: if fields[35].is_empty() { None } else { CodeType::from_str(fields[35]) },
+            code_type: if fields[35].is_empty() {
+                None
+            } else {
+                CodeType::from_str(fields[35])
+            },
             chipset_elapsed_realtime_nanos: parse_optional_i64(fields[36]),
             is_full_tracking: parse_optional_bool(fields[37]),
             sv_position_ecef_x_m: parse_optional_f64(fields[38]),
@@ -211,7 +230,11 @@ fn parse_optional_i32(s: &str) -> Option<i32> {
 }
 
 fn parse_optional_bool(s: &str) -> Option<bool> {
-    if s.is_empty() { None } else { Some(s == "1" || s == "true") }
+    if s.is_empty() {
+        None
+    } else {
+        Some(s == "1" || s == "true")
+    }
 }
 
 #[cfg(test)]
@@ -219,10 +242,7 @@ mod tests {
     use super::*;
 
     fn load_fixture(name: &str) -> String {
-        let path = format!(
-            "{}/tests/fixtures/{name}",
-            env!("CARGO_MANIFEST_DIR")
-        );
+        let path = format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"));
         std::fs::read_to_string(path).unwrap()
     }
 
@@ -276,9 +296,18 @@ mod tests {
         for line in content.lines().filter(|l| !l.is_empty()) {
             let r = RawRecord::parse(line).unwrap();
             assert_eq!(r.constellation, ConstellationType::Qzss);
-            assert!(r.sv_position_ecef_x_m.is_none(), "QZSS should have no ECEF X");
-            assert!(r.sv_position_ecef_y_m.is_none(), "QZSS should have no ECEF Y");
-            assert!(r.sv_position_ecef_z_m.is_none(), "QZSS should have no ECEF Z");
+            assert!(
+                r.sv_position_ecef_x_m.is_none(),
+                "QZSS should have no ECEF X"
+            );
+            assert!(
+                r.sv_position_ecef_y_m.is_none(),
+                "QZSS should have no ECEF Y"
+            );
+            assert!(
+                r.sv_position_ecef_z_m.is_none(),
+                "QZSS should have no ECEF Z"
+            );
             assert!(r.sv_velocity_ecef_x_mps.is_none());
             assert!(r.sv_velocity_ecef_y_mps.is_none());
             assert!(r.sv_velocity_ecef_z_mps.is_none());

@@ -139,9 +139,6 @@ mod tests {
     fn bearing_tokyo_to_osaka() {
         // Tokyo → Osaka is roughly west-southwest ≈ 256°
         let b = bearing_deg(35.6812, 139.7671, 34.7024, 135.4959);
-        assert!(
-            (b - 256.0).abs() < 5.0,
-            "expected ~256°, got {b:.1}°"
-        );
+        assert!((b - 256.0).abs() < 5.0, "expected ~256°, got {b:.1}°");
     }
 }

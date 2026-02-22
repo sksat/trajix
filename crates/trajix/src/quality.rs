@@ -141,11 +141,11 @@ mod tests {
     #[test]
     fn mixed_sequence() {
         let fixes = vec![
-            make_fix(FixProvider::Gps, 1000),   // Primary
-            make_fix(FixProvider::Nlp, 2000),   // Rejected (1s after GPS)
-            make_fix(FixProvider::Nlp, 8000),   // GapFallback (7s after GPS)
-            make_fix(FixProvider::Flp, 9000),   // Primary
-            make_fix(FixProvider::Nlp, 10000),  // Rejected (1s after FLP)
+            make_fix(FixProvider::Gps, 1000),  // Primary
+            make_fix(FixProvider::Nlp, 2000),  // Rejected (1s after GPS)
+            make_fix(FixProvider::Nlp, 8000),  // GapFallback (7s after GPS)
+            make_fix(FixProvider::Flp, 9000),  // Primary
+            make_fix(FixProvider::Nlp, 10000), // Rejected (1s after FLP)
         ];
         let q = classify_fixes(&fixes, DEFAULT_GAP_THRESHOLD_MS);
         assert_eq!(
