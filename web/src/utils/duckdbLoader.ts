@@ -31,6 +31,36 @@ export async function loadResultIntoDuckDB(
   await loadFixEpochs(db, conn, result);
 }
 
+/**
+ * Map a FixRecord (from serde-wasm-bindgen) + quality tag into a plain object
+ * suitable for JSON serialization into DuckDB.
+ *
+ * serde-wasm-bindgen returns `undefined` for Option::None, but JSON.stringify
+ * omits undefined properties. This causes read_json_auto to see fewer columns
+ * than the schema expects. We coerce undefined→null so all 16 keys are always
+ * present in the serialized JSON.
+ */
+export function mapFixRow(f: any, quality: string) {
+  return {
+    provider: f.provider,
+    latitude_deg: f.latitude_deg,
+    longitude_deg: f.longitude_deg,
+    altitude_m: f.altitude_m ?? null,
+    speed_mps: f.speed_mps ?? null,
+    accuracy_m: f.accuracy_m ?? null,
+    bearing_deg: f.bearing_deg ?? null,
+    unix_time_ms: f.unix_time_ms,
+    speed_accuracy_mps: f.speed_accuracy_mps ?? null,
+    bearing_accuracy_deg: f.bearing_accuracy_deg ?? null,
+    elapsed_realtime_ns: f.elapsed_realtime_ns ?? null,
+    vertical_accuracy_m: f.vertical_accuracy_m ?? null,
+    mock_location: f.mock_location,
+    num_used_signals: f.num_used_signals ?? null,
+    solution_type: f.solution_type ?? null,
+    quality,
+  };
+}
+
 async function loadFixes(
   db: AsyncDuckDB,
   conn: AsyncDuckDBConnection,
@@ -38,24 +68,7 @@ async function loadFixes(
 ): Promise<void> {
   if (result.fixes.length === 0) return;
 
-  const rows = result.fixes.map((f, i) => ({
-    provider: f.provider,
-    latitude_deg: f.latitude_deg,
-    longitude_deg: f.longitude_deg,
-    altitude_m: f.altitude_m,
-    speed_mps: f.speed_mps,
-    accuracy_m: f.accuracy_m,
-    bearing_deg: f.bearing_deg,
-    unix_time_ms: f.unix_time_ms,
-    speed_accuracy_mps: f.speed_accuracy_mps,
-    bearing_accuracy_deg: f.bearing_accuracy_deg,
-    elapsed_realtime_ns: f.elapsed_realtime_ns,
-    vertical_accuracy_m: f.vertical_accuracy_m,
-    mock_location: f.mock_location,
-    num_used_signals: f.num_used_signals,
-    solution_type: f.solution_type,
-    quality: result.fix_qualities[i],
-  }));
+  const rows = result.fixes.map((f, i) => mapFixRow(f, result.fix_qualities[i]));
 
   await insertJsonArray(db, conn, "fix", rows);
 }

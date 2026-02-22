@@ -8,6 +8,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { DuckDBInstance } from "@duckdb/node-api";
 import { SCHEMA_SQL, TABLE_NAMES } from "./duckdbSchema";
+import { mapFixRow } from "./duckdbLoader";
 import {
   queryCn0TimeSeries,
   querySatCountTimeSeries,
@@ -69,6 +70,145 @@ function makeQueryAdapter(nodeConn: any) {
     },
   };
 }
+
+// ────────────────────────────────────────────
+// Fix loader: undefined→null coercion
+// ────────────────────────────────────────────
+
+/** Column names of the DuckDB fix table. */
+const FIX_COLUMNS = [
+  "provider",
+  "latitude_deg",
+  "longitude_deg",
+  "altitude_m",
+  "speed_mps",
+  "accuracy_m",
+  "bearing_deg",
+  "unix_time_ms",
+  "speed_accuracy_mps",
+  "bearing_accuracy_deg",
+  "elapsed_realtime_ns",
+  "vertical_accuracy_m",
+  "mock_location",
+  "num_used_signals",
+  "solution_type",
+  "quality",
+];
+
+describe("mapFixRow — undefined→null coercion", () => {
+  /** Simulates serde-wasm-bindgen output: Option::None → JS undefined. */
+  const wasmFix = {
+    provider: "Gps",
+    latitude_deg: 36.212,
+    longitude_deg: 140.097,
+    altitude_m: 281.3,
+    speed_mps: undefined,
+    accuracy_m: 3.79,
+    bearing_deg: undefined,
+    unix_time_ms: 1771641748000,
+    speed_accuracy_mps: undefined,
+    bearing_accuracy_deg: undefined,
+    elapsed_realtime_ns: undefined,
+    vertical_accuracy_m: undefined,
+    mock_location: false,
+    num_used_signals: undefined,
+    solution_type: undefined,
+  };
+
+  it("JSON includes all 16 keys even when Option fields are undefined", () => {
+    const row = mapFixRow(wasmFix as any, "Primary");
+    const json = JSON.stringify(row);
+    const parsed = JSON.parse(json);
+
+    for (const key of FIX_COLUMNS) {
+      expect(parsed, `missing key: ${key}`).toHaveProperty(key);
+    }
+    expect(Object.keys(parsed).length).toBe(FIX_COLUMNS.length);
+  });
+
+  it("undefined fields become null, not omitted", () => {
+    const row = mapFixRow(wasmFix as any, "Primary");
+    expect(row.num_used_signals).toBeNull();
+    expect(row.solution_type).toBeNull();
+    expect(row.speed_mps).toBeNull();
+    expect(row.bearing_deg).toBeNull();
+  });
+
+  it("defined fields are preserved as-is", () => {
+    const row = mapFixRow(wasmFix as any, "Primary");
+    expect(row.provider).toBe("Gps");
+    expect(row.latitude_deg).toBe(36.212);
+    expect(row.altitude_m).toBe(281.3);
+    expect(row.mock_location).toBe(false);
+    expect(row.quality).toBe("Primary");
+  });
+});
+
+describe("mapFixRow + read_json_auto integration", () => {
+  it("read_json_auto inserts all 16 columns from coerced JSON", async () => {
+    // Create a fresh table with same schema as fix
+    await conn.run(`CREATE TABLE IF NOT EXISTS fix_json_test (
+      provider VARCHAR, latitude_deg DOUBLE, longitude_deg DOUBLE,
+      altitude_m DOUBLE, speed_mps DOUBLE, accuracy_m DOUBLE,
+      bearing_deg DOUBLE, unix_time_ms BIGINT, speed_accuracy_mps DOUBLE,
+      bearing_accuracy_deg DOUBLE, elapsed_realtime_ns BIGINT,
+      vertical_accuracy_m DOUBLE, mock_location BOOLEAN,
+      num_used_signals INTEGER, solution_type VARCHAR, quality VARCHAR
+    )`);
+
+    const rows = [
+      mapFixRow(
+        {
+          provider: "Gps",
+          latitude_deg: 36.212,
+          longitude_deg: 140.097,
+          altitude_m: 281.3,
+          speed_mps: undefined,
+          accuracy_m: 3.79,
+          bearing_deg: undefined,
+          unix_time_ms: 1771641748000,
+          speed_accuracy_mps: undefined,
+          bearing_accuracy_deg: undefined,
+          elapsed_realtime_ns: undefined,
+          vertical_accuracy_m: undefined,
+          mock_location: false,
+          num_used_signals: undefined,
+          solution_type: undefined,
+        } as any,
+        "Primary",
+      ),
+    ];
+
+    // Write JSON to temp file, load via read_json_auto
+    const fs = await import("node:fs");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const tmpFile = path.join(os.tmpdir(), "fix_json_test.json");
+    fs.writeFileSync(tmpFile, JSON.stringify(rows));
+
+    try {
+      await conn.run(
+        `INSERT INTO fix_json_test SELECT * FROM read_json_auto('${tmpFile}')`,
+      );
+
+      const reader = await conn.runAndReadAll(
+        "SELECT COUNT(*)::INTEGER AS cnt FROM fix_json_test",
+      );
+      expect(reader.getRows()[0][0]).toBe(1);
+
+      // Verify null fields round-trip
+      const dataReader = await conn.runAndReadAll(
+        "SELECT num_used_signals, solution_type FROM fix_json_test",
+      );
+      const row = dataReader.getRows()[0];
+      expect(row[0]).toBeNull();
+      expect(row[1]).toBeNull();
+    } finally {
+      fs.unlinkSync(tmpFile);
+      await conn.run("DROP TABLE IF EXISTS fix_json_test");
+    }
+  });
+});
 
 // ────────────────────────────────────────────
 // Schema tests
