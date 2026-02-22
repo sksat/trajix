@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust-fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.2
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
+          components: rustfmt
+      - run: cargo fmt --check
+
+  rust-clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.2
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
+          components: clippy
+      - uses: Swatinem/rust-cache@v2.8.2
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  rust-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.2
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2.8.2
+      - run: cargo test --workspace
+
+  web-typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2.8.2
+
+      - name: Install wasm-pack
+        run: curl -sSf https://rustwasm.github.io/wasm-pack/installer/init.sh | sh
+
+      - name: Build WASM
+        run: wasm-pack build crates/trajix-wasm --target web --out-dir pkg
+
+      - uses: pnpm/action-setup@v4.2.0
+        with:
+          version: 10
+      - uses: actions/setup-node@v6.2.0
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install
+        working-directory: web
+
+      - name: TypeCheck
+        run: pnpm exec tsc -b --noEmit
+        working-directory: web
+
+  web-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - uses: pnpm/action-setup@v4.2.0
+        with:
+          version: 10
+      - uses: actions/setup-node@v6.2.0
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install
+        working-directory: web
+
+      - name: Test
+        run: pnpm test
+        working-directory: web
