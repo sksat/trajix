@@ -109,10 +109,10 @@ impl GnssLogProcessor {
         let result = self.processor.finalize();
 
         // Map to JS-specific types
-        let js_result = ProcessingResultJs {
+        let js_result = ProcessingResult {
             header: result.header,
             lines_parsed: result.lines_parsed,
-            record_counts: RecordCountsJs {
+            record_counts: RecordCounts {
                 fix: result.record_counts.fix,
                 status: result.record_counts.status,
                 raw: result.record_counts.raw,
@@ -173,7 +173,7 @@ impl GnssLogProcessor {
                 })
                 .collect(),
             satellite_snapshots: result.satellite_snapshots,
-            sensor_time_series: SensorTimeSeriesJs {
+            sensor_time_series: SensorTimeSeries {
                 accel: result.sensor_time_series.accel,
                 gyro: result.sensor_time_series.gyro,
                 mag: result.sensor_time_series.mag,
@@ -210,21 +210,21 @@ impl GnssLogProcessor {
 
 #[derive(Serialize, Tsify)]
 #[tsify(into_wasm_abi)]
-struct ProcessingResultJs {
+struct ProcessingResult {
     header: Option<HeaderInfo>,
     lines_parsed: u64,
-    record_counts: RecordCountsJs,
+    record_counts: RecordCounts,
     fixes: Vec<FixRecord>,
     fix_qualities: Vec<FixQuality>,
     status_epochs: Vec<StatusEpochJs>,
     fix_epochs: Vec<FixEpochJs>,
     dr_trajectory: Vec<DrPointJs>,
     satellite_snapshots: Vec<SatelliteSnapshot>,
-    sensor_time_series: SensorTimeSeriesJs,
+    sensor_time_series: SensorTimeSeries,
 }
 
 #[derive(Serialize, Tsify)]
-struct RecordCountsJs {
+struct RecordCounts {
     fix: u64,
     status: u64,
     raw: u64,
@@ -274,7 +274,7 @@ struct DrPointJs {
 }
 
 #[derive(Serialize, Tsify)]
-struct SensorTimeSeriesJs {
+struct SensorTimeSeries {
     accel: Vec<DecimatedSample<SensorXyz>>,
     gyro: Vec<DecimatedSample<SensorXyz>>,
     mag: Vec<DecimatedSample<SensorXyz>>,
