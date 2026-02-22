@@ -2,7 +2,7 @@ use serde::Serialize;
 use tsify_next::Tsify;
 use wasm_bindgen::prelude::*;
 
-use trajix::dead_reckoning::{DeadReckoning, DrConfig, DrSource};
+use trajix::dead_reckoning::{DeadReckoning, DrConfig, DrSmoothing, DrSource, smooth_trajectory};
 use trajix::downsample::{DecimatedSample, StreamingDecimator};
 use trajix::parser::header::HeaderInfo;
 use trajix::parser::line::{Record, parse_line};
@@ -213,7 +213,9 @@ impl GnssLogProcessor {
 
         // Finalize streaming processors
         let (status_epochs, fix_epochs) = self.aggregator.finalize();
-        let dr_trajectory = self.dead_reckoning.finalize();
+        let raw_trajectory = self.dead_reckoning.finalize();
+        let dr_trajectory =
+            smooth_trajectory(&raw_trajectory, DrSmoothing::EndpointConstrained);
 
         let result = ProcessingResult {
             header: self.header,
