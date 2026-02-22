@@ -25,6 +25,25 @@
  *   - Dev server running (pnpm dev)
  *   - playwright-core installed (npm install --no-save playwright-core)
  *   - ffmpeg installed (only for --record)
+ *
+ * Recording design notes (rejected alternatives):
+ *   - Playwright recordVideo: captures full OS window, not viewport. i3wm tiles
+ *     the window huge, so the viewport ends up as a small region in a corner.
+ *   - Screenshot loop (browser_take_screenshot): ~5fps max, animations too choppy.
+ *   - CDP Page.startScreencast: ~30fps but runs in browser sandbox where
+ *     require('fs') is unavailable, so frames can't be saved to disk.
+ *   - VP9 realtime encoding (libvpx-vp9 -deadline realtime): 0.06x speed (~2fps
+ *     effective), unusable for screen capture. H.264 ultrafast achieves ~0.85x.
+ *   - MKV container is used during recording (resilient to incomplete writes /
+ *     missing moov atom on SIGINT), then converted to MP4 afterwards.
+ *
+ * UI interaction notes:
+ *   - Speed change MUST use page.selectOption(), not dispatchEvent('change').
+ *     React controlled components ignore synthetic DOM events.
+ *   - Camera pitch override uses frame-counter hold (SETTLE_FRAMES=2) then
+ *     auto-releases. Boolean override locks camera permanently — rejected.
+ *   - window.Cesium doesn't exist in Vite bundled builds. Access JulianDate
+ *     via viewer.clock.currentTime.constructor instead.
  */
 
 import { chromium } from 'playwright-core';
