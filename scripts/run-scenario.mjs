@@ -345,12 +345,47 @@ async function waitForParse(page) {
 
 /**
  * Build the scenario context object with all helper functions.
+ * @param {*} page Playwright page
+ * @param {object|null} capture Capture area (null if not recording)
  */
-function buildContext(page) {
+function buildContext(page, capture) {
+  // Active ffmpeg process for segment recording
+  let activeRecording = null;
+  const recordedSegments = [];
+
   return {
     page,
     sleep,
     log,
+
+    // Multi-segment recording: scenario controls when to record
+    startRecording: async (segmentName) => {
+      if (!capture) { log('  (not recording, skipping startRecording)'); return; }
+      if (activeRecording) throw new Error('Already recording — call stopRecording first');
+      activeRecording = startFfmpeg(capture, segmentName);
+      await sleep(1500);
+      log(`  recording started: ${segmentName}`);
+    },
+    stopRecording: async () => {
+      if (!activeRecording) { log('  (no active recording)'); return; }
+      const mp4 = await stopFfmpeg(activeRecording);
+      recordedSegments.push(mp4);
+      activeRecording = null;
+    },
+    getRecordedSegments: () => recordedSegments,
+    _getActiveRecording: () => activeRecording,
+
+    // Seek to a specific elapsed time (set clock directly)
+    seekTo: async (elapsedSec) => {
+      await page.evaluate((sec) => {
+        const viewer = window.__cesiumViewer;
+        const JulianDate = viewer.clock.currentTime.constructor;
+        const target = JulianDate.addSeconds(viewer.clock.startTime, sec, new JulianDate());
+        viewer.clock.currentTime = target;
+      }, elapsedSec);
+      log(`  seeked to elapsed ${elapsedSec}s`);
+      await sleep(500);
+    },
 
     setSpeed: (speed) => setSpeed(page, speed),
     waitUntilElapsed: (sec) => waitUntilElapsed(page, sec),
@@ -385,6 +420,17 @@ function buildContext(page) {
         ({ deg, ms }) => window.__animateFollowPitch(deg, ms),
         { deg, ms },
       );
+    },
+    setHeading: async (deg) => {
+      await page.waitForFunction(
+        () => typeof window.__setFollowHeading === 'function',
+        { timeout: 10000 },
+      );
+      await page.evaluate(
+        (deg) => window.__setFollowHeading(deg),
+        deg,
+      );
+      log(`  heading → ${deg}deg`);
     },
 
     openDrawer: async () => {
@@ -421,8 +467,11 @@ async function loadScenario(name) {
 
 // ── Recording helpers ────────────────────────────────────────────────
 
-function startFfmpeg(capture) {
-  log('Starting ffmpeg (MKV)...');
+function startFfmpeg(capture, segmentName) {
+  const mkvPath = segmentName
+    ? `${PROJECT_DIR}/demo-raw${takeNum}-${segmentName}.mkv`
+    : OUTPUT_MKV;
+  log(`Starting ffmpeg (MKV): ${mkvPath}`);
   const proc = spawn('ffmpeg', [
     '-f', 'x11grab',
     '-video_size', `${capture.w}x${capture.h}`,
@@ -432,13 +481,15 @@ function startFfmpeg(capture) {
     '-preset', 'ultrafast',
     '-crf', '23',
     '-pix_fmt', 'yuv420p',
-    '-y', OUTPUT_MKV,
+    '-y', mkvPath,
   ]);
   proc.stderr.on('data', () => {});
+  proc._mkvPath = mkvPath;
   return proc;
 }
 
 async function stopFfmpeg(proc) {
+  const mkvPath = proc._mkvPath || OUTPUT_MKV;
   log('Stopping ffmpeg...');
   proc.kill('SIGINT');
   await new Promise((resolve) => {
@@ -451,21 +502,24 @@ async function stopFfmpeg(proc) {
       resolve();
     });
   });
-  log(`Recording saved: ${OUTPUT_MKV}`);
+  log(`Recording saved: ${mkvPath}`);
 
-  const stat = execSync(`ls -lh "${OUTPUT_MKV}"`).toString().trim();
+  const stat = execSync(`ls -lh "${mkvPath}"`).toString().trim();
   log(`File: ${stat}`);
-}
 
-function convertToMp4() {
-  log('Converting MKV → MP4...');
+  // Convert MKV → MP4
+  const mp4Path = mkvPath.replace(/\.mkv$/, '.mp4');
+  log(`Converting MKV → MP4: ${mp4Path}`);
   execSync(
-    `ffmpeg -i "${OUTPUT_MKV}" -c copy -movflags +faststart -y "${OUTPUT_MP4}"`,
+    `ffmpeg -i "${mkvPath}" -c copy -movflags +faststart -y "${mp4Path}"`,
     { stdio: 'inherit' },
   );
-  const stat = execSync(`ls -lh "${OUTPUT_MP4}"`).toString().trim();
-  log(`MP4: ${stat}`);
+  const mp4Stat = execSync(`ls -lh "${mp4Path}"`).toString().trim();
+  log(`MP4: ${mp4Stat}`);
+  return mp4Path;
 }
+
+// convertToMp4 is now integrated into stopFfmpeg (per-segment conversion)
 
 function convertToGif() {
   log('Converting to GIF...');
@@ -517,14 +571,12 @@ async function main() {
   // 3. Resize window (i3: ensures viewport fits; graceful skip otherwise)
   await i3ResizeWindow(page);
 
-  // 4. Start ffmpeg if recording
-  let ffmpeg = null;
+  // 4. Detect capture area (before upload, while viewport is stable)
+  let capture = null;
   if (doRecord) {
-    const capture = manualCapture
+    capture = manualCapture
       ? parseCaptureArg(manualCapture)
       : await i3DetectCaptureArea(page);
-    ffmpeg = startFfmpeg(capture);
-    await sleep(2000);
   }
 
   // 5. Upload file via CDP
@@ -573,17 +625,31 @@ async function main() {
 
   // 7. Run scenario
   log(`Running scenario: ${scenario.name}`);
-  const ctx = buildContext(page);
+  const ctx = buildContext(page, doRecord ? capture : null);
+
+  // If scenario uses multi-segment (has segments property), let it control recording.
+  // Otherwise, auto-wrap in a single recording for backward compat.
+  const usesSegments = scenario.segments === true;
+  if (doRecord && capture && !usesSegments) {
+    await ctx.startRecording('full');
+  }
+
   await scenario.run(ctx);
+
+  // Stop any active recording left by the scenario
+  if (ctx._getActiveRecording()) {
+    await ctx.stopRecording();
+  }
   log('Scenario complete.');
 
-  // 8. Stop recording + convert
-  if (ffmpeg) {
-    await stopFfmpeg(ffmpeg);
-    convertToMp4();
-    if (doGif) {
-      convertToGif();
-    }
+  // 8. Handle recordings
+  const segments = ctx.getRecordedSegments();
+  if (segments.length > 0) {
+    log(`Recorded ${segments.length} segment(s): ${segments.join(', ')}`);
+  }
+
+  if (doGif && segments.length > 0) {
+    convertToGif();
   }
 
   log('=== Done ===');

@@ -2,9 +2,18 @@
 
 GNSS/positioning data visualization web app. Parses 1GB+ [Android GNSS Logger](https://play.google.com/store/apps/details?id=com.google.android.apps.location.gps.gnsslogger) log files in-browser via WASM, and visualizes flight trajectories on 3D maps with sky plots and time-series charts.
 
-![Demo](https://github.com/user-attachments/assets/10090900-729f-4587-a1f0-370c2540fdf0)
-
-*Chitose → Narita flight (2025-11-29), 607MB log file parsed in ~10s — [full video](https://github.com/user-attachments/assets/c2eea891-5479-4f58-992d-862c72e3b26c)*
+<table>
+  <tr>
+    <td><img src="https://github.com/user-attachments/assets/10090900-729f-4587-a1f0-370c2540fdf0" alt="Chitose → Narita flight" height="400"></td>
+    <td><img src="https://github.com/user-attachments/assets/59275759-c3a2-47b1-a483-e4a2bed04a3e" alt="Mt. Tsukuba ascent" height="400"></td>
+    <td><img src="https://github.com/user-attachments/assets/3fb0b005-aee7-4ab3-b5d4-db9b46495c43" alt="Mt. Tsukuba descent" height="400"></td>
+  </tr>
+  <tr>
+    <td><em>Chitose → Narita flight, 607MB — <a href="https://github.com/user-attachments/assets/c2eea891-5479-4f58-992d-862c72e3b26c">full video</a></em></td>
+    <td><em>Mt. Tsukuba ascent, 1.2GB</em></td>
+    <td><em>Mt. Tsukuba bus ride home</em></td>
+  </tr>
+</table>
 
 ## Features
 
