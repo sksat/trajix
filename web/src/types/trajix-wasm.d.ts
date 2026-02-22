@@ -44,4 +44,23 @@ declare module "trajix-wasm" {
     time_ms: number;
     value: V;
   }
+
+  interface SensorXyz {
+    x: number;
+    y: number;
+    z: number;
+  }
+
+  interface OrientationValue {
+    yaw_deg: number;
+    roll_deg: number;
+    pitch_deg: number;
+  }
+
+  interface RotationValue {
+    x: number;
+    y: number;
+    z: number;
+    w: number;
+  }
 }
