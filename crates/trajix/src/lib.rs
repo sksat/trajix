@@ -41,7 +41,7 @@ pub use parser::filter::FilterRecords;
 pub use parser::header::HeaderInfo;
 pub use parser::line::{Record, parse_line};
 pub use parser::streaming::StreamingParser;
-pub use quality::{DEFAULT_GAP_THRESHOLD_MS, FixQuality, classify_fixes};
+pub use quality::{DEFAULT_GAP_THRESHOLD_MS, FixQuality, FixQualityClassifier, classify_fixes};
 pub use record::fix::FixRecord;
 pub use record::raw::RawRecord;
 pub use record::sensor::{GameRotationVectorRecord, OrientationRecord, UncalibratedSensorRecord};

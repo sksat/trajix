@@ -6,6 +6,7 @@ use trajix::dead_reckoning::{DeadReckoning, DrConfig, DrSource};
 use trajix::downsample::{DecimatedSample, StreamingDecimator};
 use trajix::parser::header::HeaderInfo;
 use trajix::parser::line::{Record, parse_line};
+use trajix::quality::{FixQuality, FixQualityClassifier};
 use trajix::record::fix::FixRecord;
 use trajix::summary::EpochAggregator;
 
@@ -34,25 +35,6 @@ struct RotationValue {
     z: f64,
     w: f64,
 }
-
-// ────────────────────────────────────────────
-// Fix quality classification
-// ────────────────────────────────────────────
-
-/// Quality tag for each fix record.
-///
-/// - `Primary`: GPS or FLP fix
-/// - `GapFallback`: NLP fix during a GPS/FLP coverage gap (>5s without GPS/FLP)
-/// - `Rejected`: NLP fix redundant with nearby GPS/FLP coverage
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Tsify)]
-enum FixQuality {
-    Primary,
-    GapFallback,
-    Rejected,
-}
-
-/// Gap threshold: if no GPS/FLP fix within this duration, NLP is considered gap-fallback.
-const GAP_THRESHOLD_MS: i64 = 5000;
 
 // ────────────────────────────────────────────
 // GnssLogProcessor: chunk-based streaming parser
@@ -88,8 +70,8 @@ pub struct GnssLogProcessor {
     fixes: Vec<FixRecord>,
     /// Parallel quality tag for each fix (same index as `fixes`).
     fix_qualities: Vec<FixQuality>,
-    /// Last GPS/FLP fix timestamp for NLP gap detection.
-    last_gps_flp_time_ms: Option<i64>,
+    /// Streaming fix quality classifier.
+    fix_classifier: FixQualityClassifier,
 
     // ─── Streaming processors (consume records, don't store them) ───
     aggregator: EpochAggregator,
@@ -145,7 +127,7 @@ impl GnssLogProcessor {
             header_done: false,
             fixes: Vec::new(),
             fix_qualities: Vec::new(),
-            last_gps_flp_time_ms: None,
+            fix_classifier: FixQualityClassifier::default(),
             aggregator: EpochAggregator::new(DEFAULT_EPOCH_MS),
             dead_reckoning: DeadReckoning::new(DrConfig::default()),
             accel_decimator: StreamingDecimator::new(SENSOR_DECIMATE_MS),
@@ -376,24 +358,7 @@ impl GnssLogProcessor {
                         // Feed to Dead Reckoning
                         self.dead_reckoning.push_fix(&f);
 
-                        // Classify fix quality by provider
-                        use trajix::types::FixProvider;
-                        let quality = match f.provider {
-                            FixProvider::Gps | FixProvider::Flp => {
-                                self.last_gps_flp_time_ms = Some(f.unix_time_ms);
-                                FixQuality::Primary
-                            }
-                            FixProvider::Nlp => {
-                                // NLP: only useful during GPS/FLP gaps
-                                match self.last_gps_flp_time_ms {
-                                    Some(t) if (f.unix_time_ms - t) <= GAP_THRESHOLD_MS => {
-                                        FixQuality::Rejected
-                                    }
-                                    _ => FixQuality::GapFallback,
-                                }
-                            }
-                        };
-
+                        let quality = self.fix_classifier.classify(&f);
                         self.fixes.push(f);
                         self.fix_qualities.push(quality);
                     }

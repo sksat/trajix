@@ -22,6 +22,58 @@ pub enum FixQuality {
     Rejected,
 }
 
+/// Streaming fix quality classifier.
+///
+/// Tracks GPS/FLP coverage and classifies each fix incrementally.
+/// Use this when processing fixes one-by-one (e.g., in a streaming parser).
+///
+/// # Example
+/// ```
+/// use trajix::quality::{FixQualityClassifier, FixQuality};
+/// use trajix::FixRecord;
+///
+/// let mut classifier = FixQualityClassifier::default();
+/// // classifier.classify(&fix) returns FixQuality for each fix
+/// ```
+pub struct FixQualityClassifier {
+    gap_threshold_ms: i64,
+    last_gps_flp_time_ms: Option<i64>,
+}
+
+impl FixQualityClassifier {
+    /// Create a new classifier with a custom gap threshold.
+    pub fn new(gap_threshold_ms: i64) -> Self {
+        Self {
+            gap_threshold_ms,
+            last_gps_flp_time_ms: None,
+        }
+    }
+
+    /// Classify a single fix record.
+    ///
+    /// - GPS and FLP fixes are always `Primary`.
+    /// - NLP fixes within `gap_threshold_ms` of the last GPS/FLP fix are `Rejected`.
+    /// - NLP fixes beyond the gap threshold (or with no prior GPS/FLP) are `GapFallback`.
+    pub fn classify(&mut self, fix: &FixRecord) -> FixQuality {
+        match fix.provider {
+            FixProvider::Gps | FixProvider::Flp => {
+                self.last_gps_flp_time_ms = Some(fix.unix_time_ms);
+                FixQuality::Primary
+            }
+            FixProvider::Nlp => match self.last_gps_flp_time_ms {
+                Some(t) if (fix.unix_time_ms - t) <= self.gap_threshold_ms => FixQuality::Rejected,
+                _ => FixQuality::GapFallback,
+            },
+        }
+    }
+}
+
+impl Default for FixQualityClassifier {
+    fn default() -> Self {
+        Self::new(DEFAULT_GAP_THRESHOLD_MS)
+    }
+}
+
 /// Classify fix quality for a sequence of fixes.
 ///
 /// Fixes should be sorted by `unix_time_ms`. Returns a parallel `Vec<FixQuality>`
@@ -42,24 +94,8 @@ pub enum FixQuality {
 /// assert_eq!(qualities.len(), fixes.len());
 /// ```
 pub fn classify_fixes(fixes: &[FixRecord], gap_threshold_ms: i64) -> Vec<FixQuality> {
-    let mut qualities = Vec::with_capacity(fixes.len());
-    let mut last_gps_flp_time_ms: Option<i64> = None;
-
-    for fix in fixes {
-        let quality = match fix.provider {
-            FixProvider::Gps | FixProvider::Flp => {
-                last_gps_flp_time_ms = Some(fix.unix_time_ms);
-                FixQuality::Primary
-            }
-            FixProvider::Nlp => match last_gps_flp_time_ms {
-                Some(t) if (fix.unix_time_ms - t) <= gap_threshold_ms => FixQuality::Rejected,
-                _ => FixQuality::GapFallback,
-            },
-        };
-        qualities.push(quality);
-    }
-
-    qualities
+    let mut classifier = FixQualityClassifier::new(gap_threshold_ms);
+    fixes.iter().map(|fix| classifier.classify(fix)).collect()
 }
 
 #[cfg(test)]
@@ -186,5 +222,41 @@ mod tests {
         ];
         let q = classify_fixes(&fixes, DEFAULT_GAP_THRESHOLD_MS);
         assert!(q.iter().all(|&q| q == FixQuality::GapFallback));
+    }
+
+    // ── Streaming classifier tests ──
+
+    #[test]
+    fn streaming_matches_batch() {
+        let fixes = vec![
+            make_fix(FixProvider::Gps, 1000),
+            make_fix(FixProvider::Nlp, 2000),
+            make_fix(FixProvider::Nlp, 8000),
+            make_fix(FixProvider::Flp, 9000),
+            make_fix(FixProvider::Nlp, 10000),
+        ];
+        let batch = classify_fixes(&fixes, DEFAULT_GAP_THRESHOLD_MS);
+        let mut classifier = FixQualityClassifier::default();
+        let streaming: Vec<_> = fixes.iter().map(|f| classifier.classify(f)).collect();
+        assert_eq!(batch, streaming);
+    }
+
+    #[test]
+    fn streaming_default_threshold() {
+        let mut c = FixQualityClassifier::default();
+        // GPS at t=0, NLP at t=5000 (exactly at threshold) → Rejected
+        assert_eq!(c.classify(&make_fix(FixProvider::Gps, 0)), FixQuality::Primary);
+        assert_eq!(c.classify(&make_fix(FixProvider::Nlp, 5000)), FixQuality::Rejected);
+        // NLP at t=5001 → GapFallback
+        assert_eq!(c.classify(&make_fix(FixProvider::Nlp, 5001)), FixQuality::GapFallback);
+    }
+
+    #[test]
+    fn streaming_tracks_state_across_calls() {
+        let mut c = FixQualityClassifier::new(1000);
+        assert_eq!(c.classify(&make_fix(FixProvider::Nlp, 100)), FixQuality::GapFallback);
+        assert_eq!(c.classify(&make_fix(FixProvider::Gps, 200)), FixQuality::Primary);
+        assert_eq!(c.classify(&make_fix(FixProvider::Nlp, 500)), FixQuality::Rejected);
+        assert_eq!(c.classify(&make_fix(FixProvider::Nlp, 1500)), FixQuality::GapFallback);
     }
 }
