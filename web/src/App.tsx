@@ -42,6 +42,9 @@ export default function App() {
   const [imagery, setImagery] = useState<GsiImageryKey>("seamlessphoto");
   const [viewer, setViewer] = useState<Cesium.Viewer | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(
+    () => window.innerWidth < 768,
+  );
 
   const { currentTimeMs, seekTo } = useAnimationTime(viewer);
 
@@ -96,54 +99,77 @@ export default function App() {
               />
               <PlaybackControls viewer={viewer} />
             </div>
-            <aside className={`sidebar ${sidebarOpen ? "expanded" : ""}`}>
+            <div className={`sidebar-wrapper ${sidebarCollapsed ? "collapsed" : ""}`}>
               <button
-                className="sidebar-toggle"
-                onClick={() => setSidebarOpen(!sidebarOpen)}
+                className="sidebar-collapse-toggle"
+                onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
                 aria-label={
-                  sidebarOpen ? "Collapse sidebar" : "Expand sidebar"
+                  sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"
                 }
               >
-                <span className="sidebar-toggle-handle" />
+                <svg width="7" height="14" viewBox="0 0 7 14" fill="none">
+                  {sidebarCollapsed ? (
+                    <path d="M6 1L1 7L6 13" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                  ) : (
+                    <path d="M1 1L6 7L1 13" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                  )}
+                </svg>
               </button>
-              <CollapsibleSection title="Summary">
-                <ResultSummary result={state.result} />
-              </CollapsibleSection>
-              <CollapsibleSection title="Sky Plot">
-                <SkyPlot
-                  snapshots={state.result.satellite_snapshots ?? []}
-                  currentTimeMs={currentTimeMs}
-                />
-              </CollapsibleSection>
-              <CollapsibleSection title="Layers">
-                <div className="layer-controls">
-                  <label className="toggle-label">
-                    地図:
-                    <select
-                      value={imagery}
-                      onChange={(e) =>
-                        setImagery(e.target.value as GsiImageryKey)
-                      }
-                    >
-                      {Object.entries(GSI_IMAGERY).map(([key, { label }]) => (
-                        <option key={key} value={key}>
-                          {label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="toggle-label">
-                    <input
-                      type="checkbox"
-                      checked={showNlp}
-                      onChange={(e) => setShowNlp(e.target.checked)}
-                    />
-                    Show NLP fixes
-                  </label>
-                  <FixQualitySummary result={state.result} />
-                </div>
-              </CollapsibleSection>
-            </aside>
+              <aside className={`sidebar ${sidebarOpen ? "expanded" : ""}`}>
+                <button
+                  className="sidebar-toggle"
+                  onClick={() => setSidebarOpen(!sidebarOpen)}
+                  aria-label={
+                    sidebarOpen ? "Collapse sidebar" : "Expand sidebar"
+                  }
+                >
+                  <span className="sidebar-toggle-handle" />
+                </button>
+                {!sidebarCollapsed && (
+                  <div className="sidebar-content">
+                    <CollapsibleSection title="Summary">
+                      <ResultSummary result={state.result} />
+                    </CollapsibleSection>
+                    <CollapsibleSection title="Sky Plot">
+                      <SkyPlot
+                        snapshots={state.result.satellite_snapshots ?? []}
+                        currentTimeMs={currentTimeMs}
+                      />
+                    </CollapsibleSection>
+                    <CollapsibleSection title="Layers">
+                      <div className="layer-controls">
+                        <label className="toggle-label">
+                          地図:
+                          <select
+                            value={imagery}
+                            onChange={(e) =>
+                              setImagery(e.target.value as GsiImageryKey)
+                            }
+                          >
+                            {Object.entries(GSI_IMAGERY).map(
+                              ([key, { label }]) => (
+                                <option key={key} value={key}>
+                                  {label}
+                                </option>
+                              ),
+                            )}
+                          </select>
+                        </label>
+                        <label className="toggle-label">
+                          <input
+                            type="checkbox"
+                            checked={showNlp}
+                            onChange={(e) => setShowNlp(e.target.checked)}
+                          />
+                          Show NLP fixes
+                        </label>
+                        <FixQualitySummary result={state.result} />
+                      </div>
+                    </CollapsibleSection>
+                  </div>
+                )}
+              </aside>
+            </div>
           </div>
           <TimeSeriesPanel
             statusEpochs={state.result.status_epochs}
