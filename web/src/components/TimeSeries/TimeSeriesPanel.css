@@ -1,0 +1,58 @@
+.chart-panel {
+  flex-shrink: 0;
+  border-top: 1px solid #2a2a4a;
+  background: #1a1a2e;
+  position: relative;
+}
+
+.chart-panel.collapsed {
+  height: 32px;
+  overflow: hidden;
+}
+
+.chart-panel-toggle {
+  position: absolute;
+  top: 4px;
+  right: 8px;
+  z-index: 10;
+  background: #2a2a4a;
+  color: #ccc;
+  border: 1px solid #3a3a5a;
+  border-radius: 4px;
+  padding: 2px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.chart-panel-toggle:hover {
+  background: #3a3a5a;
+}
+
+.chart-panel-content {
+  display: flex;
+  overflow-x: auto;
+  padding: 4px;
+  gap: 4px;
+}
+
+.uplot-chart {
+  flex-shrink: 0;
+}
+
+/* Override uPlot defaults for dark theme */
+.uplot .u-title {
+  font-size: 11px !important;
+  color: #999 !important;
+}
+
+.uplot .u-legend {
+  font-size: 10px !important;
+}
+
+.uplot .u-legend .u-label {
+  color: #aaa !important;
+}
+
+.uplot .u-legend .u-value {
+  color: #ddd !important;
+}

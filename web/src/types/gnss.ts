@@ -18,6 +18,7 @@ export type {
   SensorXyz,
   OrientationValue,
   RotationValue,
+  SatelliteSnapshotJs,
 } from "trajix-wasm";
 
 /** Device header info (matches trajix::parser::header::HeaderInfo). */

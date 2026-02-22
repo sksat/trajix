@@ -1,77 +1,118 @@
 import { useCallback, useState } from "react";
 import type * as Cesium from "cesium";
 import { useGnssData } from "./hooks/useGnssData";
+import { useDuckDB } from "./hooks/useDuckDB";
+import { useAnimationTime } from "./hooks/useAnimationTime";
 import { FileLoader } from "./components/FileLoader";
 import { CesiumMap, GSI_IMAGERY } from "./components/CesiumMap";
 import type { GsiImageryKey } from "./components/CesiumMap";
 import { PlaybackControls } from "./components/PlaybackControls";
+import { TimeSeriesPanel } from "./components/TimeSeries";
+import { SkyPlot } from "./components/SkyPlot";
 import type { ProcessingResult } from "./types/gnss";
 import "./App.css";
 
 export default function App() {
   const { state, processFile } = useGnssData();
+  const duckdb = useDuckDB();
   const [showNlp, setShowNlp] = useState(false);
   const [imagery, setImagery] = useState<GsiImageryKey>("seamlessphoto");
   const [viewer, setViewer] = useState<Cesium.Viewer | null>(null);
+
+  const { currentTimeMs, seekTo } = useAnimationTime(viewer);
 
   const handleViewerReady = useCallback((v: Cesium.Viewer) => {
     setViewer(v);
   }, []);
 
+  // Trigger DuckDB loading when parsing completes
+  const handleFile = useCallback(
+    async (file: File) => {
+      await processFile(file);
+    },
+    [processFile],
+  );
+
+  // Load DuckDB when result becomes available
+  const result = state.status === "done" ? state.result : null;
+  if (result && duckdb.status === "idle") {
+    duckdb.loadResult(result);
+  }
+
   return (
     <div className="app">
       <header className="app-header">
         <h1>trajix</h1>
-        {state.status === "done" && state.result.header && (
+        {result && result.header && (
           <span className="device-badge">
-            {state.result.header.manufacturer} {state.result.header.model}
+            {result.header.manufacturer} {result.header.model}
           </span>
+        )}
+        {duckdb.status === "loading" && (
+          <span className="device-badge">DuckDB loading...</span>
+        )}
+        {duckdb.status === "ready" && (
+          <span className="device-badge">DuckDB ready</span>
         )}
       </header>
 
       {state.status !== "done" ? (
         <main className="app-main center">
-          <FileLoader state={state} onFile={processFile} />
+          <FileLoader state={state} onFile={handleFile} />
         </main>
       ) : (
         <div className="app-content">
-          <div className="map-panel">
-            <CesiumMap
-              result={state.result}
-              showNlp={showNlp}
-              imagery={imagery}
-              onViewerReady={handleViewerReady}
-            />
-            <PlaybackControls viewer={viewer} />
-          </div>
-          <aside className="sidebar">
-            <ResultSummary result={state.result} />
-            <div className="layer-controls">
-              <h3>Layers</h3>
-              <label className="toggle-label">
-                地図:
-                <select
-                  value={imagery}
-                  onChange={(e) => setImagery(e.target.value as GsiImageryKey)}
-                >
-                  {Object.entries(GSI_IMAGERY).map(([key, { label }]) => (
-                    <option key={key} value={key}>
-                      {label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="toggle-label">
-                <input
-                  type="checkbox"
-                  checked={showNlp}
-                  onChange={(e) => setShowNlp(e.target.checked)}
-                />
-                Show NLP fixes
-              </label>
-              <FixQualitySummary result={state.result} />
+          <div className="upper-row">
+            <div className="map-panel">
+              <CesiumMap
+                result={state.result}
+                showNlp={showNlp}
+                imagery={imagery}
+                onViewerReady={handleViewerReady}
+              />
+              <PlaybackControls viewer={viewer} />
             </div>
-          </aside>
+            <aside className="sidebar">
+              <ResultSummary result={state.result} />
+              <SkyPlot
+                snapshots={state.result.satellite_snapshots ?? []}
+                currentTimeMs={currentTimeMs}
+              />
+              <div className="layer-controls">
+                <h3>Layers</h3>
+                <label className="toggle-label">
+                  地図:
+                  <select
+                    value={imagery}
+                    onChange={(e) =>
+                      setImagery(e.target.value as GsiImageryKey)
+                    }
+                  >
+                    {Object.entries(GSI_IMAGERY).map(([key, { label }]) => (
+                      <option key={key} value={key}>
+                        {label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="toggle-label">
+                  <input
+                    type="checkbox"
+                    checked={showNlp}
+                    onChange={(e) => setShowNlp(e.target.checked)}
+                  />
+                  Show NLP fixes
+                </label>
+                <FixQualitySummary result={state.result} />
+              </div>
+            </aside>
+          </div>
+          <TimeSeriesPanel
+            statusEpochs={state.result.status_epochs}
+            fixEpochs={state.result.fix_epochs}
+            currentTimeMs={currentTimeMs}
+            onSeek={seekTo}
+          />
         </div>
       )}
     </div>

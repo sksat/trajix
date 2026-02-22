@@ -13,6 +13,6 @@ export default defineConfig({
   optimizeDeps: {
     // Don't pre-bundle trajix-wasm: let wasm-pack's init()
     // resolve trajix_wasm_bg.wasm relative to its own JS file.
-    exclude: ["trajix-wasm"],
+    exclude: ["trajix-wasm", "@duckdb/duckdb-wasm"],
   },
 });

@@ -191,6 +191,9 @@ pub struct GnssLogProcessor {
     orientation_decimator: StreamingDecimator<OrientationValue>,
     rotation_decimator: StreamingDecimator<RotationValue>,
 
+    // ─── Per-satellite snapshots (for sky plot + DuckDB status table) ───
+    satellite_snapshots: Vec<SatelliteSnapshotJs>,
+
     // ─── Time context for Status timestamp inference ───
     last_timestamp_ms: Option<i64>,
 
@@ -233,6 +236,7 @@ impl GnssLogProcessor {
             mag_decimator: StreamingDecimator::new(SENSOR_DECIMATE_MS),
             orientation_decimator: StreamingDecimator::new(SENSOR_DECIMATE_MS),
             rotation_decimator: StreamingDecimator::new(SENSOR_DECIMATE_MS),
+            satellite_snapshots: Vec::new(),
             last_timestamp_ms: None,
             fix_count: 0,
             status_count: 0,
@@ -378,6 +382,9 @@ impl GnssLogProcessor {
                 })
                 .collect(),
 
+            // Per-satellite snapshots (for sky plot + DuckDB)
+            satellite_snapshots: self.satellite_snapshots,
+
             // Downsampled sensor time-series (10Hz)
             sensor_time_series: SensorTimeSeries {
                 accel: self.accel_decimator.finalize(),
@@ -478,6 +485,18 @@ impl GnssLogProcessor {
                         // Fill missing timestamp
                         if s.unix_time_ms.is_none() {
                             s.unix_time_ms = self.last_timestamp_ms;
+                        }
+                        // Store per-satellite snapshot for sky plot + DuckDB
+                        if let Some(ts) = s.unix_time_ms {
+                            self.satellite_snapshots.push(SatelliteSnapshotJs {
+                                time_ms: ts,
+                                constellation: s.constellation.as_u8(),
+                                svid: s.svid,
+                                azimuth_deg: s.azimuth_deg,
+                                elevation_deg: s.elevation_deg,
+                                cn0_dbhz: s.cn0_dbhz,
+                                used_in_fix: s.used_in_fix,
+                            });
                         }
                         // Feed to aggregator (Status is consumed, not stored)
                         self.aggregator.push(Record::Status(s));
@@ -588,6 +607,9 @@ struct ProcessingResult {
     /// Dead Reckoning trajectory (GNSS + IMU fusion).
     dr_trajectory: Vec<DrPointJs>,
 
+    /// Per-satellite status snapshots for sky plot and DuckDB status table.
+    satellite_snapshots: Vec<SatelliteSnapshotJs>,
+
     /// Downsampled sensor data (10Hz) for time-series charts.
     sensor_time_series: SensorTimeSeries,
 }
@@ -649,6 +671,21 @@ struct SensorTimeSeries {
     mag: Vec<DecimatedSample<SensorXyz>>,
     orientation: Vec<DecimatedSample<OrientationValue>>,
     rotation: Vec<DecimatedSample<RotationValue>>,
+}
+
+/// Per-satellite status snapshot for sky plot and DuckDB status table.
+///
+/// One entry per satellite per epoch. Stored during streaming parse
+/// alongside the aggregated epoch summaries.
+#[derive(Debug, Clone, Serialize, Tsify)]
+struct SatelliteSnapshotJs {
+    time_ms: i64,
+    constellation: u8,
+    svid: u32,
+    azimuth_deg: f64,
+    elevation_deg: f64,
+    cn0_dbhz: f64,
+    used_in_fix: bool,
 }
 
 #[cfg(test)]
@@ -819,6 +856,89 @@ Status,1771641749000,46,0,1,2,1575420030,30.00,192.285,31.194557,1,1,1,22.1
         proc.feed(chunk);
         assert_eq!(proc.fix_count, 2);
         assert_eq!(proc.status_count, 3);
+    }
+
+    // ─── SatelliteSnapshot tests ───
+
+    #[test]
+    fn satellite_snapshots_populated_from_status() {
+        let mut proc = GnssLogProcessor::new();
+        // Fix gives timestamp context for Status records with empty time
+        let chunk = b"\
+Fix,GPS,36.212,140.097,281.3,0.0,3.79,,1771641748000,0.07,,2091905471128467,3.66,0,,,
+Status,,46,0,1,2,1575420030,25.70,192.285,31.194557,1,1,1,22.1
+Status,,46,1,3,9,1600875010,28.40,10.0,45.0,1,1,1,21.0
+";
+        proc.feed(chunk);
+
+        assert_eq!(proc.satellite_snapshots.len(), 2);
+
+        // First satellite: GPS (constellation=1), svid=2
+        let s0 = &proc.satellite_snapshots[0];
+        assert_eq!(s0.constellation, 1); // GPS
+        assert_eq!(s0.svid, 2);
+        assert!((s0.azimuth_deg - 192.285).abs() < 0.001);
+        assert!((s0.elevation_deg - 31.194557).abs() < 0.001);
+        assert!((s0.cn0_dbhz - 25.70).abs() < 0.01);
+        assert!(s0.used_in_fix);
+
+        // Second satellite: GLONASS (constellation=3), svid=9
+        let s1 = &proc.satellite_snapshots[1];
+        assert_eq!(s1.constellation, 3); // GLONASS
+        assert_eq!(s1.svid, 9);
+        assert!((s1.azimuth_deg - 10.0).abs() < 0.001);
+        assert!((s1.elevation_deg - 45.0).abs() < 0.001);
+        assert!((s1.cn0_dbhz - 28.40).abs() < 0.01);
+        assert!(s1.used_in_fix);
+    }
+
+    #[test]
+    fn satellite_snapshots_timestamp_inference() {
+        let mut proc = GnssLogProcessor::new();
+        // Status records have empty unix_time_ms; should be inferred from preceding Fix
+        let chunk = b"\
+Fix,GPS,36.212,140.097,281.3,0.0,3.79,,1771641748000,0.07,,2091905471128467,3.66,0,,,
+Status,,46,0,1,2,1575420030,25.70,192.285,31.194557,1,1,1,22.1
+Fix,GPS,36.212,140.097,281.3,1.5,4.0,,1771641749000,0.82,25.9,2092092474651730,2.8,0,,,
+Status,,46,0,1,2,1575420030,30.00,180.0,50.0,1,1,1,22.1
+";
+        proc.feed(chunk);
+
+        assert_eq!(proc.satellite_snapshots.len(), 2);
+        // First Status: time inferred from Fix at 1771641748000
+        assert_eq!(proc.satellite_snapshots[0].time_ms, 1771641748000);
+        // Second Status: time inferred from Fix at 1771641749000
+        assert_eq!(proc.satellite_snapshots[1].time_ms, 1771641749000);
+    }
+
+    #[test]
+    fn satellite_snapshots_with_explicit_timestamp() {
+        let mut proc = GnssLogProcessor::new();
+        // Status with explicit timestamp
+        let chunk = b"\
+Status,1771641749000,46,0,1,2,1575420030,30.00,180.0,50.0,1,1,1,22.1
+";
+        proc.feed(chunk);
+
+        assert_eq!(proc.satellite_snapshots.len(), 1);
+        assert_eq!(proc.satellite_snapshots[0].time_ms, 1771641749000);
+        assert!((proc.satellite_snapshots[0].azimuth_deg - 180.0).abs() < 0.001);
+        assert!((proc.satellite_snapshots[0].elevation_deg - 50.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn satellite_snapshots_skipped_without_timestamp() {
+        let mut proc = GnssLogProcessor::new();
+        // Status with no timestamp and no preceding record to infer from
+        let chunk = b"\
+Status,,46,0,1,2,1575420030,25.70,192.285,31.194557,1,1,1,22.1
+";
+        proc.feed(chunk);
+
+        // No timestamp available → snapshot not stored
+        assert_eq!(proc.satellite_snapshots.len(), 0);
+        // But status_count still incremented
+        assert_eq!(proc.status_count, 1);
     }
 
     // ─── StreamingDecimator tests ───

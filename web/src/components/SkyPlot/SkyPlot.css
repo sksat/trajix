@@ -1,0 +1,50 @@
+.sky-plot {
+  padding: 8px;
+}
+
+.sky-plot-title {
+  margin: 0 0 4px 0;
+  font-size: 13px;
+  color: #aaa;
+}
+
+.sky-plot svg {
+  display: block;
+  margin: 0 auto;
+}
+
+.sky-label {
+  font-size: 10px;
+  fill: #666;
+  text-anchor: middle;
+  dominant-baseline: central;
+}
+
+.sat-label {
+  font-size: 6px;
+  text-anchor: middle;
+  pointer-events: none;
+}
+
+.sky-plot-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+  justify-content: center;
+}
+
+.sky-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10px;
+  color: #999;
+}
+
+.legend-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  display: inline-block;
+}

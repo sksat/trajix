@@ -27,4 +27,14 @@ declare module "trajix-wasm" {
     vertical_speed_accuracy_mps: number | null;
     solution_type: string | null;
   }
+
+  interface SatelliteSnapshotJs {
+    time_ms: number;
+    constellation: number;
+    svid: number;
+    azimuth_deg: number;
+    elevation_deg: number;
+    cn0_dbhz: number;
+    used_in_fix: boolean;
+  }
 }
