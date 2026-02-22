@@ -2,7 +2,7 @@
 
 **https://sksat.github.io/trajix/**
 
-GNSS/positioning data visualization web app. Parses 1GB+ [Android GNSS Logger](https://play.google.com/store/apps/details?id=com.google.android.apps.location.gps.gnsslogger) log files in-browser via WASM, and visualizes flight trajectories on 3D maps with sky plots and time-series charts.
+GNSS/positioning data visualization web app. Parses 1GB+ [Android GNSS Logger](https://play.google.com/store/apps/details?id=com.google.android.apps.location.gps.gnsslogger) log files in-browser via WebAssembly, and visualizes flight trajectories on 3D maps with sky plots and time-series charts.
 
 <table>
   <tr>
@@ -19,7 +19,7 @@ GNSS/positioning data visualization web app. Parses 1GB+ [Android GNSS Logger](h
 
 ## Features
 
-- **In-browser WASM parser** — streams 1GB+ files without server upload
+- **In-browser WebAssembly parser** — streams 1GB+ files without server upload
 - **3D flight visualization** — CesiumJS with GSI terrain tiles, camera follow mode
 - **Sky plot** — real-time satellite positions with constellation filtering
 - **Time-series charts** — CN0, satellite count, accuracy, speed (uPlot)
