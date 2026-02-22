@@ -123,21 +123,38 @@
   text-align: center;
 }
 
+/* Two-row compact layout (mobile) */
+.playback-compact {
+  flex-wrap: wrap;
+}
+
+.playback-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+}
+
+.playback-row-seek .playback-seek {
+  flex: 1;
+  min-width: 0;
+}
+
+.playback-spacer {
+  flex: 1;
+}
+
 /* Mobile adjustments */
 @media (max-width: 767px) {
   .playback-controls {
     bottom: 44px; /* Clear the 36px sidebar peek + gap */
-    padding: var(--space-1) var(--space-2);
+    padding: var(--space-1) var(--space-2) var(--space-3);
     gap: var(--space-1);
     max-width: calc(100vw - var(--space-4));
   }
 
-  .playback-seek {
-    min-width: 100px;
-  }
-
   .playback-time {
-    min-width: 80px;
+    min-width: auto;
     font-size: var(--text-xs);
   }
 }

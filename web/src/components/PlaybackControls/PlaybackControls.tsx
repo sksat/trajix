@@ -18,6 +18,10 @@ import {
   approxCameraPosition,
   occlusionNudgeDirection,
 } from "../../utils/cameraFollow";
+import {
+  isCompactLayout,
+  playbackContainerClass,
+} from "../../layout/playbackLayout";
 import "./PlaybackControls.css";
 
 const SPEED_OPTIONS = [1, 10, 50, 100, 500] as const;
@@ -33,6 +37,15 @@ export function PlaybackControls({ viewer }: PlaybackControlsProps) {
   const [progress, setProgress] = useState(0);
   const [elapsedStr, setElapsedStr] = useState("00:00:00");
   const [totalStr, setTotalStr] = useState("00:00:00");
+  const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
+
+  useEffect(() => {
+    const onResize = () => setViewportWidth(window.innerWidth);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  const compact = isCompactLayout(viewportWidth);
 
   const rafRef = useRef<number>(0);
   const markerRef = useRef<Cesium.Entity | null>(null);
@@ -450,51 +463,88 @@ export function PlaybackControls({ viewer }: PlaybackControlsProps) {
 
   if (!viewer) return null;
 
+  const playBtn = (
+    <button
+      key="play"
+      className="playback-btn play-btn"
+      onClick={togglePlay}
+      title={isPlaying ? "Pause" : "Play"}
+    >
+      {isPlaying ? "\u23F8" : "\u25B6"}
+    </button>
+  );
+
+  const speedSelect = (
+    <select
+      key="speed"
+      className="playback-speed"
+      value={speed}
+      onChange={(e) => changeSpeed(Number(e.target.value))}
+      title="Playback speed"
+    >
+      {SPEED_OPTIONS.map((s) => (
+        <option key={s} value={s}>
+          {s}x
+        </option>
+      ))}
+    </select>
+  );
+
+  const seekSlider = (
+    <input
+      key="seek"
+      className="playback-seek"
+      type="range"
+      min={0}
+      max={1}
+      step={0.0001}
+      value={progress}
+      onChange={handleSeek}
+      title="Seek"
+    />
+  );
+
+  const timeDisplay = (
+    <span key="time" className="playback-time">
+      {elapsedStr} / {totalStr}
+    </span>
+  );
+
+  const followBtn = (
+    <button
+      key="follow"
+      className={`playback-btn follow-btn ${isFollowing ? "active" : ""}`}
+      onClick={toggleFollow}
+      title={isFollowing ? "Free camera" : "Follow marker"}
+    >
+      {isFollowing ? "\u{1F3AF}" : "\u{1F4CD}"}
+    </button>
+  );
+
   return (
-    <div className="playback-controls">
-      <button
-        className="playback-btn play-btn"
-        onClick={togglePlay}
-        title={isPlaying ? "Pause" : "Play"}
-      >
-        {isPlaying ? "\u23F8" : "\u25B6"}
-      </button>
-
-      <select
-        className="playback-speed"
-        value={speed}
-        onChange={(e) => changeSpeed(Number(e.target.value))}
-        title="Playback speed"
-      >
-        {SPEED_OPTIONS.map((s) => (
-          <option key={s} value={s}>
-            {s}x
-          </option>
-        ))}
-      </select>
-
-      <input
-        className="playback-seek"
-        type="range"
-        min={0}
-        max={1}
-        step={0.0001}
-        value={progress}
-        onChange={handleSeek}
-        title="Seek"
-      />
-
-      <span className="playback-time">
-        {elapsedStr} / {totalStr}
-      </span>
-
-      <button
-        className={`playback-btn follow-btn ${isFollowing ? "active" : ""}`}
-        onClick={toggleFollow}
-        title={isFollowing ? "Free camera" : "Follow marker"}
-      >
-        {isFollowing ? "\u{1F3AF}" : "\u{1F4CD}"}
-      </button>
+    <div className={playbackContainerClass(viewportWidth)}>
+      {compact ? (
+        <>
+          <div className="playback-row playback-row-actions">
+            {playBtn}
+            {speedSelect}
+            {timeDisplay}
+            <div className="playback-spacer" />
+            {followBtn}
+          </div>
+          <div className="playback-row playback-row-seek">
+            {seekSlider}
+          </div>
+        </>
+      ) : (
+        <>
+          {playBtn}
+          {speedSelect}
+          {seekSlider}
+          {timeDisplay}
+          {followBtn}
+        </>
+      )}
     </div>
   );
 }
