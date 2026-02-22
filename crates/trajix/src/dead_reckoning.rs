@@ -66,6 +66,18 @@ pub enum DrSource {
     DeadReckoning,
 }
 
+/// Post-processing smoothing method for DR segments.
+///
+/// Applied after [`DeadReckoning::finalize`] via [`smooth_trajectory`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DrSmoothing {
+    /// Replace DR points with straight line between bounding GNSS fixes.
+    Linear,
+    /// Keep DR trajectory shape, distribute endpoint error with t² weighting.
+    /// Preserves turns and shape from IMU while correcting drift.
+    EndpointConstrained,
+}
+
 /// A single trajectory point.
 #[derive(Debug, Clone)]
 pub struct DrPoint {
@@ -300,6 +312,150 @@ fn velocity_from_anchor(anchor: &GnssAnchor) -> Vector3<f64> {
         }
         _ => Vector3::zeros(),
     }
+}
+
+// ────────────────────────────────────────────
+// Post-processing smoothing
+// ────────────────────────────────────────────
+
+/// Convert lat/lon to ENU (east, north) relative to an anchor point.
+fn latlon_to_enu(lat: f64, lon: f64, anchor_lat: f64, anchor_lon: f64) -> (f64, f64) {
+    let east = (lon - anchor_lon) * meters_per_deg_lon(anchor_lat);
+    let north = (lat - anchor_lat) * METERS_PER_DEG_LAT;
+    (east, north)
+}
+
+/// Convert ENU (east, north) back to lat/lon relative to an anchor point.
+fn enu_to_latlon_2d(east: f64, north: f64, anchor_lat: f64, anchor_lon: f64) -> (f64, f64) {
+    let lat = anchor_lat + north / METERS_PER_DEG_LAT;
+    let lon = anchor_lon + east / meters_per_deg_lon(anchor_lat);
+    (lat, lon)
+}
+
+/// A DR segment bounded by GNSS fixes on both sides.
+struct DrSegment {
+    start_gnss: usize,
+    end_gnss: usize,
+    dr_start: usize,
+    dr_end: usize, // inclusive
+}
+
+/// Find all DR segments bounded by GNSS points on both sides.
+fn find_dr_segments(trajectory: &[DrPoint]) -> Vec<DrSegment> {
+    let mut segments = Vec::new();
+    let mut i = 0;
+    while i < trajectory.len() {
+        if trajectory[i].source == DrSource::DeadReckoning {
+            // Find preceding GNSS point
+            let start_gnss = if i > 0 {
+                (0..i)
+                    .rev()
+                    .find(|&j| trajectory[j].source == DrSource::Gnss)
+            } else {
+                None
+            };
+            // Find end of DR run
+            let dr_start = i;
+            while i < trajectory.len() && trajectory[i].source == DrSource::DeadReckoning {
+                i += 1;
+            }
+            let dr_end = i - 1;
+            // Find following GNSS point
+            let end_gnss = (i..trajectory.len()).find(|&j| trajectory[j].source == DrSource::Gnss);
+
+            if let (Some(sg), Some(eg)) = (start_gnss, end_gnss) {
+                segments.push(DrSegment {
+                    start_gnss: sg,
+                    end_gnss: eg,
+                    dr_start,
+                    dr_end,
+                });
+            }
+        } else {
+            i += 1;
+        }
+    }
+    segments
+}
+
+/// Apply post-processing smoothing to a trajectory.
+///
+/// Identifies DR segments (contiguous `DeadReckoning` points bounded by `Gnss`
+/// on both sides) and adjusts positions according to the chosen method.
+/// GNSS points are never modified. Unbounded DR segments (no re-acquisition)
+/// are left unchanged.
+///
+/// Smoothing operates in local ENU coordinates for geometric correctness,
+/// and only adjusts horizontal position (altitude is preserved from DR).
+pub fn smooth_trajectory(trajectory: &[DrPoint], method: DrSmoothing) -> Vec<DrPoint> {
+    let mut result: Vec<DrPoint> = trajectory.to_vec();
+    let segments = find_dr_segments(&result);
+
+    for seg in &segments {
+        let start = &trajectory[seg.start_gnss];
+        let end = &trajectory[seg.end_gnss];
+        let t_start = start.time_ms as f64;
+        let t_end = end.time_ms as f64;
+        let dt = t_end - t_start;
+        if dt <= 0.0 {
+            continue;
+        }
+
+        let anchor_lat = start.latitude_deg;
+        let anchor_lon = start.longitude_deg;
+        let (end_east, end_north) =
+            latlon_to_enu(end.latitude_deg, end.longitude_deg, anchor_lat, anchor_lon);
+
+        match method {
+            DrSmoothing::Linear => {
+                for pt in &mut result[seg.dr_start..=seg.dr_end] {
+                    let t = pt.time_ms as f64;
+                    let alpha = (t - t_start) / dt;
+                    let east = alpha * end_east;
+                    let north = alpha * end_north;
+                    let (lat, lon) = enu_to_latlon_2d(east, north, anchor_lat, anchor_lon);
+                    pt.latitude_deg = lat;
+                    pt.longitude_deg = lon;
+                    // altitude preserved
+                }
+            }
+            DrSmoothing::EndpointConstrained => {
+                // Error = end_gnss_enu - last_dr_enu (horizontal only)
+                let last_dr = &trajectory[seg.dr_end];
+                let (last_dr_east, last_dr_north) = latlon_to_enu(
+                    last_dr.latitude_deg,
+                    last_dr.longitude_deg,
+                    anchor_lat,
+                    anchor_lon,
+                );
+                let error_east = end_east - last_dr_east;
+                let error_north = end_north - last_dr_north;
+
+                for i in seg.dr_start..=seg.dr_end {
+                    let t = result[i].time_ms as f64;
+                    let frac = (t - t_start) / dt;
+                    // Quadratic weighting: correction ∝ t² (matches accel-bias error growth)
+                    let alpha = frac * frac;
+
+                    let (dr_east, dr_north) = latlon_to_enu(
+                        trajectory[i].latitude_deg,
+                        trajectory[i].longitude_deg,
+                        anchor_lat,
+                        anchor_lon,
+                    );
+                    let corrected_east = dr_east + alpha * error_east;
+                    let corrected_north = dr_north + alpha * error_north;
+                    let (lat, lon) =
+                        enu_to_latlon_2d(corrected_east, corrected_north, anchor_lat, anchor_lon);
+                    result[i].latitude_deg = lat;
+                    result[i].longitude_deg = lon;
+                    // altitude preserved
+                }
+            }
+        }
+    }
+
+    result
 }
 
 #[cfg(test)]
@@ -811,5 +967,1025 @@ mod tests {
         assert_eq!(traj.len(), 1);
         assert_eq!(traj[0].time_ms, 1000);
         assert_eq!(traj[0].source, DrSource::Gnss);
+    }
+
+    // ── Smoothing tests ──
+
+    /// Build a simple trajectory: GNSS → DR × n → GNSS for smoothing tests.
+    fn make_smoothing_trajectory(
+        dr_offsets_m: &[(f64, f64)], // (east_m, north_m) relative to start GNSS
+        end_gnss_offset_m: (f64, f64),
+    ) -> Vec<DrPoint> {
+        let base_lat = 36.0;
+        let base_lon = 140.0;
+        let mpdl = meters_per_deg_lon(base_lat);
+        let n = dr_offsets_m.len();
+
+        let mut traj = Vec::with_capacity(n + 2);
+        // Start GNSS at t=0
+        traj.push(DrPoint {
+            time_ms: 0,
+            latitude_deg: base_lat,
+            longitude_deg: base_lon,
+            altitude_m: 100.0,
+            source: DrSource::Gnss,
+        });
+        // DR points at t=1000, 2000, ...
+        for (i, &(east, north)) in dr_offsets_m.iter().enumerate() {
+            traj.push(DrPoint {
+                time_ms: (i as i64 + 1) * 1000,
+                latitude_deg: base_lat + north / METERS_PER_DEG_LAT,
+                longitude_deg: base_lon + east / mpdl,
+                altitude_m: 100.0 + i as f64,
+                source: DrSource::DeadReckoning,
+            });
+        }
+        // End GNSS at t=(n+1)*1000
+        traj.push(DrPoint {
+            time_ms: (n as i64 + 1) * 1000,
+            latitude_deg: base_lat + end_gnss_offset_m.1 / METERS_PER_DEG_LAT,
+            longitude_deg: base_lon + end_gnss_offset_m.0 / mpdl,
+            altitude_m: 110.0,
+            source: DrSource::Gnss,
+        });
+        traj
+    }
+
+    #[test]
+    fn smooth_linear_basic() {
+        // DR drifts north, but end GNSS is east.
+        // Linear should place DR points on a straight line east.
+        let traj = make_smoothing_trajectory(
+            &[
+                (0.0, 10.0),
+                (0.0, 20.0),
+                (0.0, 30.0),
+                (0.0, 40.0),
+                (0.0, 50.0),
+            ],
+            (100.0, 0.0),
+        );
+        let smoothed = smooth_trajectory(&traj, DrSmoothing::Linear);
+
+        assert_eq!(smoothed.len(), traj.len());
+        // DR points should be on a line from (0,0) to (100,0) in ENU
+        let mpdl = meters_per_deg_lon(36.0);
+        for (i, pt) in smoothed.iter().enumerate().take(6).skip(1) {
+            let alpha = i as f64 / 6.0;
+            let expected_east = alpha * 100.0;
+            let actual_east = (pt.longitude_deg - 140.0) * mpdl;
+            let actual_north = (pt.latitude_deg - 36.0) * METERS_PER_DEG_LAT;
+            assert!(
+                (actual_east - expected_east).abs() < 0.1,
+                "point {i}: east={actual_east:.2}, expected={expected_east:.2}"
+            );
+            assert!(
+                actual_north.abs() < 0.1,
+                "point {i}: north={actual_north:.2}, expected=0"
+            );
+        }
+    }
+
+    #[test]
+    fn smooth_endpoint_basic() {
+        // DR drifts north, end GNSS is east.
+        // EC should keep shape but pull last DR toward end GNSS.
+        let traj = make_smoothing_trajectory(
+            &[
+                (0.0, 10.0),
+                (0.0, 20.0),
+                (0.0, 30.0),
+                (0.0, 40.0),
+                (0.0, 50.0),
+            ],
+            (100.0, 0.0),
+        );
+        let smoothed = smooth_trajectory(&traj, DrSmoothing::EndpointConstrained);
+
+        assert_eq!(smoothed.len(), traj.len());
+
+        // First DR point (alpha=(1/6)²≈0.028) should be barely corrected
+        let mpdl = meters_per_deg_lon(36.0);
+        let first_north = (smoothed[1].latitude_deg - 36.0) * METERS_PER_DEG_LAT;
+        assert!(
+            (first_north - 10.0).abs() < 3.0,
+            "first DR should barely move: north={first_north:.2}"
+        );
+
+        // Last DR point (alpha=(5/6)²≈0.694) should be significantly corrected
+        let last_east = (smoothed[5].longitude_deg - 140.0) * mpdl;
+        let last_north = (smoothed[5].latitude_deg - 36.0) * METERS_PER_DEG_LAT;
+        // Should have moved substantially east (original was 0)
+        assert!(
+            last_east > 30.0,
+            "last DR should move east: east={last_east:.2}"
+        );
+        // Should still have some northward component (shape preserved)
+        assert!(
+            last_north > 10.0,
+            "last DR should retain some north: north={last_north:.2}"
+        );
+    }
+
+    #[test]
+    fn smooth_quadratic_weighting() {
+        // Verify t² weighting: at alpha=0.5, correction should be 0.25 * error
+        let traj = make_smoothing_trajectory(
+            &[(50.0, 0.0), (100.0, 0.0)], // DR at 50m and 100m east
+            (200.0, 0.0),                 // end GNSS at 200m east
+        );
+        let smoothed = smooth_trajectory(&traj, DrSmoothing::EndpointConstrained);
+
+        let mpdl = meters_per_deg_lon(36.0);
+        // last_dr is at 100m east; end_gnss is at 200m east → error = 100m east
+        // DR point at t=1000 (alpha = 1/3): correction = (1/3)² * 100 = 11.11m
+        let p1_east = (smoothed[1].longitude_deg - 140.0) * mpdl;
+        let expected_1 = 50.0 + (1.0 / 3.0_f64).powi(2) * 100.0;
+        assert!(
+            (p1_east - expected_1).abs() < 0.5,
+            "t=1000: east={p1_east:.2}, expected={expected_1:.2}"
+        );
+
+        // DR point at t=2000 (alpha = 2/3): correction = (2/3)² * 100 = 44.44m
+        let p2_east = (smoothed[2].longitude_deg - 140.0) * mpdl;
+        let expected_2 = 100.0 + (2.0 / 3.0_f64).powi(2) * 100.0;
+        assert!(
+            (p2_east - expected_2).abs() < 0.5,
+            "t=2000: east={p2_east:.2}, expected={expected_2:.2}"
+        );
+    }
+
+    #[test]
+    fn smooth_preserves_gnss() {
+        let traj = make_smoothing_trajectory(&[(50.0, 50.0)], (100.0, 0.0));
+
+        for method in [DrSmoothing::Linear, DrSmoothing::EndpointConstrained] {
+            let smoothed = smooth_trajectory(&traj, method);
+            // Start GNSS
+            assert_eq!(smoothed[0].latitude_deg, traj[0].latitude_deg);
+            assert_eq!(smoothed[0].longitude_deg, traj[0].longitude_deg);
+            // End GNSS
+            assert_eq!(smoothed[2].latitude_deg, traj[2].latitude_deg);
+            assert_eq!(smoothed[2].longitude_deg, traj[2].longitude_deg);
+        }
+    }
+
+    #[test]
+    fn smooth_no_reacquire() {
+        // DR at end with no following GNSS → should be unchanged
+        let base_lat = 36.0;
+        let base_lon = 140.0;
+        let traj = vec![
+            DrPoint {
+                time_ms: 0,
+                latitude_deg: base_lat,
+                longitude_deg: base_lon,
+                altitude_m: 100.0,
+                source: DrSource::Gnss,
+            },
+            DrPoint {
+                time_ms: 1000,
+                latitude_deg: base_lat + 0.001,
+                longitude_deg: base_lon,
+                altitude_m: 100.0,
+                source: DrSource::DeadReckoning,
+            },
+        ];
+        for method in [DrSmoothing::Linear, DrSmoothing::EndpointConstrained] {
+            let smoothed = smooth_trajectory(&traj, method);
+            assert_eq!(smoothed[1].latitude_deg, traj[1].latitude_deg);
+            assert_eq!(smoothed[1].longitude_deg, traj[1].longitude_deg);
+        }
+    }
+
+    #[test]
+    fn smooth_multiple_segments() {
+        let base_lat = 36.0;
+        let base_lon = 140.0;
+        let mpdl = meters_per_deg_lon(base_lat);
+        let traj = vec![
+            DrPoint {
+                time_ms: 0,
+                latitude_deg: base_lat,
+                longitude_deg: base_lon,
+                altitude_m: 100.0,
+                source: DrSource::Gnss,
+            },
+            DrPoint {
+                time_ms: 1000,
+                latitude_deg: base_lat + 50.0 / METERS_PER_DEG_LAT,
+                longitude_deg: base_lon,
+                altitude_m: 100.0,
+                source: DrSource::DeadReckoning,
+            },
+            DrPoint {
+                time_ms: 2000,
+                latitude_deg: base_lat,
+                longitude_deg: base_lon + 100.0 / mpdl,
+                altitude_m: 100.0,
+                source: DrSource::Gnss,
+            },
+            DrPoint {
+                time_ms: 3000,
+                latitude_deg: base_lat - 50.0 / METERS_PER_DEG_LAT,
+                longitude_deg: base_lon + 100.0 / mpdl,
+                altitude_m: 100.0,
+                source: DrSource::DeadReckoning,
+            },
+            DrPoint {
+                time_ms: 4000,
+                latitude_deg: base_lat,
+                longitude_deg: base_lon + 200.0 / mpdl,
+                altitude_m: 100.0,
+                source: DrSource::Gnss,
+            },
+        ];
+
+        let smoothed = smooth_trajectory(&traj, DrSmoothing::Linear);
+        // Segment 1: DR[1] should be on line from GNSS[0] to GNSS[2]
+        let p1_east = (smoothed[1].longitude_deg - base_lon) * mpdl;
+        assert!(
+            (p1_east - 50.0).abs() < 0.5,
+            "seg1: east={p1_east:.2}, expected=50"
+        );
+        // Segment 2: DR[3] should be on line from GNSS[2] to GNSS[4]
+        let p3_east = (smoothed[3].longitude_deg - base_lon) * mpdl;
+        assert!(
+            (p3_east - 150.0).abs() < 0.5,
+            "seg2: east={p3_east:.2}, expected=150"
+        );
+    }
+
+    #[test]
+    fn smooth_altitude_unchanged() {
+        let traj =
+            make_smoothing_trajectory(&[(0.0, 10.0), (0.0, 20.0), (0.0, 30.0)], (100.0, 0.0));
+        for method in [DrSmoothing::Linear, DrSmoothing::EndpointConstrained] {
+            let smoothed = smooth_trajectory(&traj, method);
+            for i in 1..=3 {
+                assert_eq!(
+                    smoothed[i].altitude_m, traj[i].altitude_m,
+                    "altitude at {i} should be unchanged"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn smooth_empty() {
+        let empty: Vec<DrPoint> = vec![];
+        assert!(smooth_trajectory(&empty, DrSmoothing::Linear).is_empty());
+        assert!(smooth_trajectory(&empty, DrSmoothing::EndpointConstrained).is_empty());
+    }
+
+    // ── SVG visualization helpers ──
+
+    fn make_fix_at(
+        time_ms: i64,
+        accuracy: f64,
+        speed: Option<f64>,
+        bearing: Option<f64>,
+        lat: f64,
+        lon: f64,
+    ) -> FixRecord {
+        FixRecord {
+            provider: FixProvider::Gps,
+            latitude_deg: lat,
+            longitude_deg: lon,
+            altitude_m: Some(100.0),
+            speed_mps: speed,
+            accuracy_m: Some(accuracy),
+            bearing_deg: bearing,
+            unix_time_ms: time_ms,
+            speed_accuracy_mps: None,
+            bearing_accuracy_deg: None,
+            elapsed_realtime_ns: None,
+            vertical_accuracy_m: None,
+            mock_location: false,
+            num_used_signals: None,
+            vertical_speed_accuracy_mps: None,
+            solution_type: None,
+        }
+    }
+
+    fn save_svg(name: &str, svg: &str) {
+        let dir = format!("{}/../../assets/dr", env!("CARGO_MANIFEST_DIR"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = format!("{dir}/{name}.svg");
+        std::fs::write(&path, svg).unwrap();
+        eprintln!("Wrote {path}");
+    }
+
+    // ── Comparison SVG renderer ──
+
+    struct NamedTrajectory<'a> {
+        label: &'a str,
+        points: &'a [DrPoint],
+        color: &'a str,
+        dash: Option<&'a str>,
+    }
+
+    fn render_comparison_svg(
+        trajectories: &[NamedTrajectory],
+        title: &str,
+        description: &str,
+    ) -> String {
+        let width = 800.0_f64;
+        let height = 600.0_f64;
+        let margin = 60.0;
+        let plot_w = width - 2.0 * margin;
+        let plot_h = height - 2.0 * margin;
+
+        // Union bounding box across all trajectories
+        let mut min_lon = f64::MAX;
+        let mut max_lon = f64::MIN;
+        let mut min_lat = f64::MAX;
+        let mut max_lat = f64::MIN;
+        for t in trajectories {
+            for p in t.points {
+                min_lon = min_lon.min(p.longitude_deg);
+                max_lon = max_lon.max(p.longitude_deg);
+                min_lat = min_lat.min(p.latitude_deg);
+                max_lat = max_lat.max(p.latitude_deg);
+            }
+        }
+        let pad_lon = (max_lon - min_lon).max(1e-7) * 0.1;
+        let pad_lat = (max_lat - min_lat).max(1e-7) * 0.1;
+        let lon_range = (max_lon - min_lon) + 2.0 * pad_lon;
+        let lat_range = (max_lat - min_lat) + 2.0 * pad_lat;
+        let bl = min_lon - pad_lon;
+        let bb = min_lat - pad_lat;
+        let to_x = |lon: f64| -> f64 { margin + (lon - bl) / lon_range * plot_w };
+        let to_y = |lat: f64| -> f64 { margin + (1.0 - (lat - bb) / lat_range) * plot_h };
+
+        let mut svg = format!(
+            r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" width="{width}" height="{height}">
+<style>
+  .title {{ font: bold 16px sans-serif; fill: #1f2937; }}
+  .desc {{ font: 12px sans-serif; fill: #6b7280; }}
+  .label {{ font: 10px monospace; fill: #374151; }}
+  .grid {{ stroke: #e5e7eb; stroke-width: 0.5; }}
+</style>
+<rect width="{width}" height="{height}" fill="#fafafa" rx="4"/>
+<text x="{margin}" y="24" class="title">{title}</text>
+<text x="{margin}" y="42" class="desc">{description}</text>
+"##
+        );
+
+        // Grid
+        for i in 0..=4 {
+            let y = margin + plot_h * i as f64 / 4.0;
+            svg.push_str(&format!(
+                r#"<line x1="{margin}" y1="{y:.1}" x2="{:.1}" y2="{y:.1}" class="grid"/>"#,
+                margin + plot_w
+            ));
+            let x = margin + plot_w * i as f64 / 4.0;
+            svg.push_str(&format!(
+                r#"<line x1="{x:.1}" y1="{margin}" x2="{x:.1}" y2="{:.1}" class="grid"/>"#,
+                margin + plot_h
+            ));
+        }
+
+        // Collect GNSS points from first trajectory for shared markers
+        let gnss_points: Vec<&DrPoint> = trajectories
+            .first()
+            .map(|t| {
+                t.points
+                    .iter()
+                    .filter(|p| p.source == DrSource::Gnss)
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // GNSS path (shared)
+        if !gnss_points.is_empty() {
+            let mut d = String::new();
+            for (i, p) in gnss_points.iter().enumerate() {
+                let x = to_x(p.longitude_deg);
+                let y = to_y(p.latitude_deg);
+                let cmd = if i == 0 { "M" } else { "L" };
+                d.push_str(&format!("{cmd}{x:.0},{y:.0} "));
+            }
+            svg.push_str(&format!(
+                r##"<path d="{d}" fill="none" stroke="#2563eb" stroke-width="2" opacity="0.5"/>"##
+            ));
+        }
+
+        // Each trajectory's DR path
+        let max_dr_vis = 200;
+        for t in trajectories {
+            let dr_total = t
+                .points
+                .iter()
+                .filter(|p| p.source == DrSource::DeadReckoning)
+                .count();
+            let step = (dr_total / max_dr_vis).max(1);
+            let mut d = String::new();
+            let mut dr_idx = 0usize;
+            let mut first = true;
+            for p in t.points {
+                if p.source != DrSource::DeadReckoning {
+                    continue;
+                }
+                if !dr_idx.is_multiple_of(step) {
+                    dr_idx += 1;
+                    continue;
+                }
+                dr_idx += 1;
+                let x = to_x(p.longitude_deg);
+                let y = to_y(p.latitude_deg);
+                let cmd = if first { "M" } else { "L" };
+                d.push_str(&format!("{cmd}{x:.0},{y:.0} "));
+                first = false;
+            }
+            if !d.is_empty() {
+                let dash = t
+                    .dash
+                    .map_or(String::new(), |d| format!(r#" stroke-dasharray="{d}""#));
+                svg.push_str(&format!(
+                    r#"<path d="{d}" fill="none" stroke="{}" stroke-width="2" opacity="0.7"{dash}/>"#,
+                    t.color
+                ));
+            }
+        }
+
+        // GNSS point markers
+        for p in &gnss_points {
+            let x = to_x(p.longitude_deg);
+            let y = to_y(p.latitude_deg);
+            svg.push_str(&format!(
+                r##"<circle cx="{x:.0}" cy="{y:.0}" r="4" fill="#2563eb" stroke="#2563eb"/>"##
+            ));
+        }
+
+        // Legend
+        let lx = width - 220.0;
+        let mut ly = height - 70.0;
+        svg.push_str(&format!(
+            r##"<circle cx="{lx}" cy="{ly}" r="4" fill="#2563eb"/>
+<text x="{:.1}" y="{:.1}" class="label">GNSS fix</text>"##,
+            lx + 10.0,
+            ly + 4.0,
+        ));
+        for t in trajectories {
+            ly += 16.0;
+            let dash = t
+                .dash
+                .map_or(String::new(), |d| format!(r#" stroke-dasharray="{d}""#));
+            svg.push_str(&format!(
+                r#"<line x1="{:.1}" y1="{ly}" x2="{:.1}" y2="{ly}" stroke="{}" stroke-width="2"{dash}/>
+<text x="{:.1}" y="{:.1}" class="label">{}</text>"#,
+                lx - 10.0,
+                lx + 4.0,
+                t.color,
+                lx + 10.0,
+                ly + 4.0,
+                t.label,
+            ));
+        }
+
+        svg.push_str("\n</svg>");
+        svg
+    }
+
+    // ── Edge case visualization tests ──
+    //
+    // Each test builds the trajectory via a reusable builder, runs assertions,
+    // then renders a smoothing-comparison SVG (raw DR + Linear + EndpointConstrained).
+    //
+    // Run with: cargo test -p trajix dr_viz -- --ignored
+
+    /// Helper: render comparison SVG for a trajectory and save it.
+    fn save_comparison(raw: &[DrPoint], name: &str, title: &str, desc: &str) {
+        let linear = smooth_trajectory(raw, DrSmoothing::Linear);
+        let ec = smooth_trajectory(raw, DrSmoothing::EndpointConstrained);
+        let svg = render_comparison_svg(
+            &[
+                NamedTrajectory {
+                    label: "Raw DR",
+                    points: raw,
+                    color: "#dc2626",
+                    dash: Some("6,3"),
+                },
+                NamedTrajectory {
+                    label: "Linear",
+                    points: &linear,
+                    color: "#16a34a",
+                    dash: Some("3,3"),
+                },
+                NamedTrajectory {
+                    label: "EndpointConstrained",
+                    points: &ec,
+                    color: "#ea580c",
+                    dash: Some("8,3,2,3"),
+                },
+            ],
+            title,
+            desc,
+        );
+        save_svg(name, &svg);
+    }
+
+    #[test]
+    #[ignore]
+    fn dr_viz_urban_canyon() {
+        let traj = build_urban_canyon_trajectory();
+
+        let gnss_count = traj.iter().filter(|p| p.source == DrSource::Gnss).count();
+        let dr_count = traj
+            .iter()
+            .filter(|p| p.source == DrSource::DeadReckoning)
+            .count();
+        assert!(gnss_count >= 20, "expected >=20 GNSS, got {gnss_count}");
+        assert!(dr_count >= 40, "expected >=40 DR, got {dr_count}");
+
+        let base_lat = 35.6812;
+        let base_lon = 139.7001;
+        for p in &traj {
+            let dlat = (p.latitude_deg - base_lat).abs() * METERS_PER_DEG_LAT;
+            let dlon = (p.longitude_deg - base_lon).abs() * meters_per_deg_lon(base_lat);
+            let dist = (dlat * dlat + dlon * dlon).sqrt();
+            assert!(dist < 200.0, "point drifted {dist:.0}m from start");
+        }
+        assert!(
+            traj.last().unwrap().latitude_deg > traj.first().unwrap().latitude_deg,
+            "should have northward trend"
+        );
+
+        save_comparison(
+            &traj,
+            "urban_canyon",
+            "Urban Canyon",
+            "Rapid GNSS good/bad alternation — 8 cycles, 3s good + 2s DR, walking north",
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn dr_viz_tunnel_traverse() {
+        let traj = build_tunnel_trajectory();
+        let mpdl = meters_per_deg_lon(36.0);
+
+        let dr_pts: Vec<_> = traj
+            .iter()
+            .filter(|p| p.source == DrSource::DeadReckoning)
+            .collect();
+        assert!(
+            dr_pts.len() > 100,
+            "expected >100 DR points, got {}",
+            dr_pts.len()
+        );
+        let first_dr = dr_pts.first().unwrap();
+        let last_dr = dr_pts.last().unwrap();
+        assert!(
+            last_dr.longitude_deg > first_dr.longitude_deg,
+            "DR should move east"
+        );
+        let exit_lon = 140.0 + (65.0 * 20.0) / mpdl;
+        let drift_m = (last_dr.longitude_deg - exit_lon).abs() * mpdl;
+        assert!(
+            drift_m < 2000.0,
+            "DR drift should be bounded, got {drift_m:.0}m"
+        );
+
+        save_comparison(
+            &traj,
+            "tunnel_traverse",
+            "Tunnel Traverse",
+            "60s GNSS outage at 72 km/h east — IMU coasting through tunnel",
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn dr_viz_highway_turn() {
+        let traj = build_highway_turn_trajectory();
+
+        let dr_pts: Vec<_> = traj
+            .iter()
+            .filter(|p| p.source == DrSource::DeadReckoning)
+            .collect();
+        assert!(
+            dr_pts.len() > 500,
+            "expected >500 DR points, got {}",
+            dr_pts.len()
+        );
+        let early: Vec<_> = dr_pts.iter().take(200).collect();
+        assert!(
+            early.last().unwrap().latitude_deg > early.first().unwrap().latitude_deg,
+            "early DR should trend north"
+        );
+
+        save_comparison(
+            &traj,
+            "highway_turn",
+            "Highway Turn",
+            "30 m/s north → 90° turn east during 13s GNSS outage",
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn dr_viz_stationary_noise() {
+        let traj = build_stationary_noise_trajectory();
+
+        let base_lat = 35.6812;
+        let base_lon = 139.7671;
+        for p in traj.iter().filter(|p| p.source == DrSource::DeadReckoning) {
+            let dlat = (p.latitude_deg - base_lat) * METERS_PER_DEG_LAT;
+            let dlon = (p.longitude_deg - base_lon) * meters_per_deg_lon(base_lat);
+            let dist = (dlat * dlat + dlon * dlon).sqrt();
+            assert!(
+                dist < 5.0,
+                "stationary drift should be <5m, got {dist:.2}m at t={}ms",
+                p.time_ms
+            );
+        }
+
+        save_comparison(
+            &traj,
+            "stationary_noise",
+            "Stationary with Noise",
+            "30s GNSS outage while stationary — accelerometer noise, ZUPT active",
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn dr_viz_max_duration_cutoff() {
+        let traj = build_max_duration_trajectory();
+
+        let dr_pts: Vec<_> = traj
+            .iter()
+            .filter(|p| p.source == DrSource::DeadReckoning)
+            .collect();
+        let dr_start = 1000_i64;
+        for p in &dr_pts {
+            assert!(
+                p.time_ms - dr_start <= 30_000,
+                "DR point at {}ms exceeds max duration (start={})",
+                p.time_ms,
+                dr_start
+            );
+        }
+        if let Some(last_dr) = dr_pts.last() {
+            assert!(last_dr.time_ms <= 31_000);
+        }
+        let exit_lon = 140.0 + 0.005;
+        let last_dr_lon = dr_pts.last().unwrap().longitude_deg;
+        assert!(
+            exit_lon > last_dr_lon,
+            "re-acquisition should be further east than last DR"
+        );
+
+        save_comparison(
+            &traj,
+            "max_duration_cutoff",
+            "Max Duration Cutoff",
+            "DR stops after 30s limit — gap visible before GNSS re-acquisition",
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn dr_viz_s_curve() {
+        let traj = build_s_curve_trajectory();
+        let base_lat = 36.0;
+
+        let dr_pts: Vec<_> = traj
+            .iter()
+            .filter(|p| p.source == DrSource::DeadReckoning)
+            .collect();
+        assert!(
+            dr_pts.len() > 500,
+            "expected >500 DR points, got {}",
+            dr_pts.len()
+        );
+        let lat_min = dr_pts
+            .iter()
+            .map(|p| p.latitude_deg)
+            .fold(f64::MAX, f64::min);
+        let lat_max = dr_pts
+            .iter()
+            .map(|p| p.latitude_deg)
+            .fold(f64::MIN, f64::max);
+        let lon_min = dr_pts
+            .iter()
+            .map(|p| p.longitude_deg)
+            .fold(f64::MAX, f64::min);
+        let lon_max = dr_pts
+            .iter()
+            .map(|p| p.longitude_deg)
+            .fold(f64::MIN, f64::max);
+        let lat_spread_m = (lat_max - lat_min) * METERS_PER_DEG_LAT;
+        let lon_spread_m = (lon_max - lon_min) * meters_per_deg_lon(base_lat);
+        assert!(
+            lat_spread_m > 10.0,
+            "should have latitude spread, got {lat_spread_m:.1}m"
+        );
+        assert!(
+            lon_spread_m > 10.0,
+            "should have longitude spread, got {lon_spread_m:.1}m"
+        );
+
+        save_comparison(
+            &traj,
+            "s_curve",
+            "S-Curve",
+            "20 m/s with north→east→south turns during 15s GNSS outage",
+        );
+    }
+
+    // ── Reusable trajectory builders for smoothing comparison ──
+    //
+    // Run with: cargo test -p trajix dr_viz_compare -- --ignored
+
+    /// Build an urban-canyon trajectory (reusable for comparison).
+    fn build_urban_canyon_trajectory() -> Vec<DrPoint> {
+        let mut dr = DeadReckoning::new(DrConfig {
+            zupt_speed_threshold_mps: 0.0,
+            ..DrConfig::default()
+        });
+
+        let base_lat = 35.6812;
+        let base_lon = 139.7001;
+        let speed = 1.4;
+        let mut t: i64 = 0;
+
+        for cycle in 0..8 {
+            let cycle_start_lat = base_lat + (cycle as f64 * 5.0 * speed) / METERS_PER_DEG_LAT;
+            for i in 0..3 {
+                let lat = cycle_start_lat + (i as f64 * speed) / METERS_PER_DEG_LAT;
+                dr.push_fix(&make_fix_at(t, 3.0, Some(speed), Some(0.0), lat, base_lon));
+                t += 1000;
+            }
+            dr.push_fix(&make_fix_at(
+                t,
+                100.0,
+                None,
+                None,
+                cycle_start_lat,
+                base_lon,
+            ));
+            t += 100;
+            dr.push_attitude(&make_grv(t, 0.0, 0.0, 0.0, 1.0));
+            for i in 0..200 {
+                dr.push_accel(&make_accel(t + i * 10, 0.0, 0.2, GRAVITY_MS2));
+            }
+            t += 2000;
+        }
+        dr.finalize()
+    }
+
+    /// Build a highway-turn trajectory (reusable for comparison).
+    fn build_highway_turn_trajectory() -> Vec<DrPoint> {
+        let mut dr = DeadReckoning::new(DrConfig {
+            zupt_speed_threshold_mps: 0.0,
+            ..DrConfig::default()
+        });
+
+        let base_lat = 36.0;
+        let base_lon = 140.0;
+        let speed = 30.0;
+
+        for i in 0..3 {
+            let lat = base_lat + (i as f64 * speed) / METERS_PER_DEG_LAT;
+            dr.push_fix(&make_fix_at(
+                i * 1000,
+                5.0,
+                Some(speed),
+                Some(0.0),
+                lat,
+                base_lon,
+            ));
+        }
+        dr.push_fix(&make_fix_at(3000, 80.0, None, None, base_lat, base_lon));
+
+        dr.push_attitude(&make_grv(3000, 0.0, 0.0, 0.0, 1.0));
+        for i in 1..=500 {
+            dr.push_accel(&make_accel(3000 + i * 10, 0.0, 0.0, GRAVITY_MS2));
+        }
+
+        let turn_angle = std::f64::consts::FRAC_PI_2;
+        let r = speed * 3.0 / turn_angle;
+        let a_c = speed * speed / r;
+        for i in 1..=300 {
+            let frac = i as f64 / 300.0;
+            let angle = frac * turn_angle;
+            let half = angle / 2.0;
+            dr.push_attitude(&make_grv(8000 + i * 10, 0.0, 0.0, half.sin(), half.cos()));
+            dr.push_accel(&make_accel(8000 + i * 10, a_c, 0.0, GRAVITY_MS2));
+        }
+
+        let s90 = std::f64::consts::FRAC_PI_4.sin();
+        let c90 = std::f64::consts::FRAC_PI_4.cos();
+        dr.push_attitude(&make_grv(11000, 0.0, 0.0, s90, c90));
+        for i in 1..=500 {
+            dr.push_accel(&make_accel(11000 + i * 10, 0.0, 0.0, GRAVITY_MS2));
+        }
+
+        dr.push_fix(&make_fix_at(
+            16000,
+            5.0,
+            Some(speed),
+            Some(90.0),
+            base_lat + 0.002,
+            base_lon + 0.002,
+        ));
+        dr.finalize()
+    }
+
+    /// Build a stationary-noise trajectory (reusable for comparison).
+    fn build_stationary_noise_trajectory() -> Vec<DrPoint> {
+        let mut dr = DeadReckoning::new(DrConfig::default());
+
+        let base_lat = 35.6812;
+        let base_lon = 139.7671;
+
+        dr.push_fix(&make_fix_at(0, 5.0, Some(0.0), None, base_lat, base_lon));
+        dr.push_fix(&make_fix_at(1000, 50.0, None, None, base_lat, base_lon));
+        dr.push_attitude(&make_grv(1000, 0.0, 0.0, 0.0, 1.0));
+
+        for i in 1..=3000 {
+            let t = 1000 + i * 10;
+            let phase = i as f64 * 0.1;
+            let nx = 0.05 * (phase * 1.7).sin() + 0.03 * (phase * 3.1).cos();
+            let ny = 0.04 * (phase * 2.3).sin() + 0.02 * (phase * 4.7).cos();
+            let nz = 0.02 * (phase * 0.9).sin();
+            dr.push_accel(&make_accel(t, nx, ny, GRAVITY_MS2 + nz));
+        }
+
+        dr.push_fix(&make_fix_at(
+            31000,
+            5.0,
+            Some(0.0),
+            None,
+            base_lat,
+            base_lon,
+        ));
+        dr.finalize()
+    }
+
+    /// Build a max-duration-cutoff trajectory (reusable for comparison).
+    fn build_max_duration_trajectory() -> Vec<DrPoint> {
+        let mut dr = DeadReckoning::new(DrConfig {
+            zupt_speed_threshold_mps: 0.0,
+            max_dr_duration_ms: 30_000,
+            ..DrConfig::default()
+        });
+
+        let base_lat = 36.0;
+        let base_lon = 140.0;
+
+        dr.push_fix(&make_fix_at(
+            0,
+            5.0,
+            Some(5.0),
+            Some(90.0),
+            base_lat,
+            base_lon,
+        ));
+        dr.push_fix(&make_fix_at(1000, 100.0, None, None, base_lat, base_lon));
+        dr.push_attitude(&make_grv(1000, 0.0, 0.0, 0.0, 1.0));
+
+        for i in 1..=6000 {
+            dr.push_accel(&make_accel(1000 + i * 10, 0.0, 0.0, GRAVITY_MS2));
+        }
+
+        let exit_lon = base_lon + 0.005;
+        dr.push_fix(&make_fix_at(
+            62000,
+            5.0,
+            Some(5.0),
+            Some(90.0),
+            base_lat,
+            exit_lon,
+        ));
+        dr.finalize()
+    }
+
+    /// Build a tunnel-traverse trajectory (reusable for comparison).
+    fn build_tunnel_trajectory() -> Vec<DrPoint> {
+        let mut dr = DeadReckoning::new(DrConfig {
+            zupt_speed_threshold_mps: 0.0,
+            max_dr_duration_ms: 120_000,
+            ..DrConfig::default()
+        });
+
+        let base_lat = 36.0;
+        let base_lon = 140.0;
+        let speed = 20.0;
+        let mpdl = meters_per_deg_lon(base_lat);
+
+        for i in 0..5 {
+            let lon = base_lon + (i as f64 * speed) / mpdl;
+            dr.push_fix(&make_fix_at(
+                i * 1000,
+                5.0,
+                Some(speed),
+                Some(90.0),
+                base_lat,
+                lon,
+            ));
+        }
+
+        dr.push_fix(&make_fix_at(5000, 200.0, None, None, base_lat, base_lon));
+        dr.push_attitude(&make_grv(5000, 0.0, 0.0, 0.0, 1.0));
+        for i in 1..=6000 {
+            dr.push_accel(&make_accel(5000 + i * 10, 0.0, 0.0, GRAVITY_MS2));
+        }
+
+        let exit_lon = base_lon + (65.0 * speed) / mpdl;
+        for i in 0..5 {
+            let lon = exit_lon + (i as f64 * speed) / mpdl;
+            dr.push_fix(&make_fix_at(
+                65000 + i * 1000,
+                5.0,
+                Some(speed),
+                Some(90.0),
+                base_lat,
+                lon,
+            ));
+        }
+        dr.finalize()
+    }
+
+    /// Build an S-curve trajectory (reusable for comparison).
+    fn build_s_curve_trajectory() -> Vec<DrPoint> {
+        let mut dr = DeadReckoning::new(DrConfig {
+            zupt_speed_threshold_mps: 0.0,
+            ..DrConfig::default()
+        });
+
+        let base_lat = 36.0;
+        let base_lon = 140.0;
+        let speed = 20.0;
+
+        for i in 0..3 {
+            let lat = base_lat + (i as f64 * speed) / METERS_PER_DEG_LAT;
+            dr.push_fix(&make_fix_at(
+                i * 1000,
+                5.0,
+                Some(speed),
+                Some(0.0),
+                lat,
+                base_lon,
+            ));
+        }
+
+        dr.push_fix(&make_fix_at(3000, 80.0, None, None, base_lat, base_lon));
+
+        // Phase 1: 3s north
+        dr.push_attitude(&make_grv(3000, 0.0, 0.0, 0.0, 1.0));
+        for i in 1..=300 {
+            dr.push_accel(&make_accel(3000 + i * 10, 0.0, 0.0, GRAVITY_MS2));
+        }
+
+        // Phase 2: north→east turn
+        let turn_angle = std::f64::consts::FRAC_PI_2;
+        let r = speed * 3.0 / turn_angle;
+        let a_c = speed * speed / r;
+        for i in 1..=300 {
+            let frac = i as f64 / 300.0;
+            let angle = frac * turn_angle;
+            let half = angle / 2.0;
+            dr.push_attitude(&make_grv(6000 + i * 10, 0.0, 0.0, half.sin(), half.cos()));
+            dr.push_accel(&make_accel(6000 + i * 10, a_c, 0.0, GRAVITY_MS2));
+        }
+
+        // Phase 3: 3s east
+        let s90 = std::f64::consts::FRAC_PI_4.sin();
+        let c90 = std::f64::consts::FRAC_PI_4.cos();
+        dr.push_attitude(&make_grv(9000, 0.0, 0.0, s90, c90));
+        for i in 1..=300 {
+            dr.push_accel(&make_accel(9000 + i * 10, 0.0, 0.0, GRAVITY_MS2));
+        }
+
+        // Phase 4: east→south turn
+        for i in 1..=300 {
+            let frac = i as f64 / 300.0;
+            let angle = turn_angle + frac * turn_angle;
+            let half = angle / 2.0;
+            dr.push_attitude(&make_grv(12000 + i * 10, 0.0, 0.0, half.sin(), half.cos()));
+            dr.push_accel(&make_accel(12000 + i * 10, a_c, 0.0, GRAVITY_MS2));
+        }
+
+        // Phase 5: 3s south
+        let s180 = std::f64::consts::FRAC_PI_2.sin();
+        let c180 = std::f64::consts::FRAC_PI_2.cos();
+        dr.push_attitude(&make_grv(15000, 0.0, 0.0, s180, c180));
+        for i in 1..=300 {
+            dr.push_accel(&make_accel(15000 + i * 10, 0.0, 0.0, GRAVITY_MS2));
+        }
+
+        dr.push_fix(&make_fix_at(
+            18000,
+            5.0,
+            Some(speed),
+            Some(180.0),
+            base_lat,
+            base_lon + 0.003,
+        ));
+        dr.finalize()
     }
 }

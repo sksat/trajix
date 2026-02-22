@@ -51,7 +51,9 @@ pub use summary::{ConstellationStats, EpochAggregator, FixEpoch, StatusEpoch};
 pub use types::{CodeType, ConstellationType, FixProvider, RecordType};
 
 // Dead Reckoning
-pub use dead_reckoning::{DeadReckoning, DrConfig, DrPoint, DrSource};
+pub use dead_reckoning::{
+    DeadReckoning, DrConfig, DrPoint, DrSmoothing, DrSource, smooth_trajectory,
+};
 
 // Downsampling
 pub use downsample::{
@@ -68,7 +70,8 @@ pub use stats::{FixStats, PercentileStats, ProviderCount, summarize_fixes};
 /// ```
 pub mod prelude {
     pub use crate::{
-        ConstellationType, DeadReckoning, DrConfig, DrPoint, DrSource, FilterRecords, FixProvider,
-        FixQuality, FixRecord, ParseError, Record, RecordType, StatusRecord, StreamingParser,
+        ConstellationType, DeadReckoning, DrConfig, DrPoint, DrSmoothing, DrSource, FilterRecords,
+        FixProvider, FixQuality, FixRecord, ParseError, Record, RecordType, StatusRecord,
+        StreamingParser, smooth_trajectory,
     };
 }
