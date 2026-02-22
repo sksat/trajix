@@ -657,19 +657,19 @@ describe("follow simulation — visibility", () => {
     positions: Array<{ lon: number; lat: number; timeMs: number }>,
     timeMs: number,
   ): { lon: number; lat: number } {
-    if (timeMs <= positions[0].timeMs) return positions[0];
-    const last = positions[positions.length - 1];
+    if (timeMs <= positions[0]!.timeMs) return positions[0]!;
+    const last = positions[positions.length - 1]!;
     if (timeMs >= last.timeMs) return last;
 
     let lo = 0;
     let hi = positions.length - 1;
     while (hi - lo > 1) {
       const mid = (lo + hi) >> 1;
-      if (positions[mid].timeMs <= timeMs) lo = mid;
+      if (positions[mid]!.timeMs <= timeMs) lo = mid;
       else hi = mid;
     }
-    const a = positions[lo];
-    const b = positions[hi];
+    const a = positions[lo]!;
+    const b = positions[hi]!;
     const t = (timeMs - a.timeMs) / (b.timeMs - a.timeMs);
     return {
       lon: a.lon + (b.lon - a.lon) * t,
@@ -691,16 +691,16 @@ describe("follow simulation — visibility", () => {
     const { playbackSpeed, fps, hLerp, fovRadians, marginFraction } = config;
     const frameDurationMs = (playbackSpeed * 1000) / fps;
 
-    let smoothedLon = positions[0].lon;
-    let smoothedLat = positions[0].lat;
+    let smoothedLon = positions[0]!.lon;
+    let smoothedLat = positions[0]!.lat;
     let range = 200;
     let totalFrames = 0;
     let offScreenFrames = 0;
     let maxLag = 0;
     let maxRange = 0;
 
-    const startMs = positions[0].timeMs;
-    const endMs = positions[positions.length - 1].timeMs;
+    const startMs = positions[0]!.timeMs;
+    const endMs = positions[positions.length - 1]!.timeMs;
 
     for (let simMs = startMs; simMs <= endMs; simMs += frameDurationMs) {
       const target = interpAt(positions, simMs);
@@ -804,7 +804,7 @@ describe("follow simulation — visibility", () => {
     const walk = generateTrack(
       1.4, 60, toRad(139), toRad(35), toRad(0),
     );
-    const lastWalk = walk[walk.length - 1];
+    const lastWalk = walk[walk.length - 1]!;
     const fly = generateTrack(250, 240, lastWalk.lon, lastWalk.lat, toRad(190));
     const combined = [
       ...walk,
@@ -858,18 +858,18 @@ describe("real flight data — visibility", () => {
     positions: Array<{ lon: number; lat: number; timeMs: number }>,
     timeMs: number,
   ): { lon: number; lat: number } {
-    if (timeMs <= positions[0].timeMs) return positions[0];
-    const last = positions[positions.length - 1];
+    if (timeMs <= positions[0]!.timeMs) return positions[0]!;
+    const last = positions[positions.length - 1]!;
     if (timeMs >= last.timeMs) return last;
     let lo = 0;
     let hi = positions.length - 1;
     while (hi - lo > 1) {
       const mid = (lo + hi) >> 1;
-      if (positions[mid].timeMs <= timeMs) lo = mid;
+      if (positions[mid]!.timeMs <= timeMs) lo = mid;
       else hi = mid;
     }
-    const a = positions[lo];
-    const b = positions[hi];
+    const a = positions[lo]!;
+    const b = positions[hi]!;
     const t = (timeMs - a.timeMs) / (b.timeMs - a.timeMs);
     return {
       lon: a.lon + (b.lon - a.lon) * t,
@@ -886,15 +886,15 @@ describe("real flight data — visibility", () => {
   }) {
     const { playbackSpeed, fps, hLerp, fovRadians, marginFraction } = config;
     const frameDurationMs = (playbackSpeed * 1000) / fps;
-    let smoothedLon = track[0].lon;
-    let smoothedLat = track[0].lat;
+    let smoothedLon = track[0]!.lon;
+    let smoothedLat = track[0]!.lat;
     let range = 200;
     let totalFrames = 0;
     let offScreenFrames = 0;
     let maxLag = 0;
     let maxRange = 0;
-    const startMs = track[0].timeMs;
-    const endMs = track[track.length - 1].timeMs;
+    const startMs = track[0]!.timeMs;
+    const endMs = track[track.length - 1]!.timeMs;
 
     for (let simMs = startMs; simMs <= endMs; simMs += frameDurationMs) {
       const target = interpAt(track, simMs);
@@ -920,9 +920,9 @@ describe("real flight data — visibility", () => {
 
   it("loads fixture data correctly", () => {
     expect(cruiseFixes.length).toBe(300);
-    expect(cruiseFixes[0].speed).toBeGreaterThan(200);
-    expect(cruiseFixes[0].lat).toBeGreaterThan(42);
-    expect(cruiseFixes[0].lon).toBeCloseTo(141.77, 0);
+    expect(cruiseFixes[0]!.speed).toBeGreaterThan(200);
+    expect(cruiseFixes[0]!.lat).toBeGreaterThan(42);
+    expect(cruiseFixes[0]!.lon).toBeCloseTo(141.77, 0);
   });
 
   it("50x playback: zero off-screen frames", () => {
