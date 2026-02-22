@@ -4,14 +4,14 @@ GNSS/positioning data visualization web app. Parses 1GB+ [Android GNSS Logger](h
 
 <table>
   <tr>
-    <td><img src="https://github.com/user-attachments/assets/10090900-729f-4587-a1f0-370c2540fdf0" alt="Chitose → Narita flight" height="400"></td>
-    <td><img src="https://github.com/user-attachments/assets/59275759-c3a2-47b1-a483-e4a2bed04a3e" alt="Mt. Tsukuba ascent" height="400"></td>
-    <td><img src="https://github.com/user-attachments/assets/3fb0b005-aee7-4ab3-b5d4-db9b46495c43" alt="Mt. Tsukuba descent" height="400"></td>
+    <td><img src="https://github.com/user-attachments/assets/10090900-729f-4587-a1f0-370c2540fdf0" alt="Chitose → Narita flight" width="225" height="400"></td>
+    <td><img src="https://github.com/user-attachments/assets/2308af1a-c862-4e3a-9528-cfd9cb6116b9" alt="Mt. Tsukuba ascent" width="225" height="400"></td>
+    <td><img src="https://github.com/user-attachments/assets/53c17d3a-3681-487b-a255-030334940db7" alt="Mt. Tsukuba descent" width="225" height="400"></td>
   </tr>
   <tr>
-    <td><em>Chitose → Narita flight, 607MB — <a href="https://github.com/user-attachments/assets/c2eea891-5479-4f58-992d-862c72e3b26c">full video</a></em></td>
-    <td><em>Mt. Tsukuba ascent, 1.2GB</em></td>
-    <td><em>Mt. Tsukuba bus ride home</em></td>
+    <td><em>Chitose → Narita flight</em></td>
+    <td><em>Mt. Tsukuba ascent</em></td>
+    <td><em>Mt. Tsukuba descent</em></td>
   </tr>
 </table>
 
