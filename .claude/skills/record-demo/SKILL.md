@@ -63,6 +63,8 @@ The elapsed seconds for each phase transition should be:
 | Wrong Chrome window detected | Multiple Chrome windows open | i3 detection matches by window title containing "trajix" |
 | `outerHeight - innerHeight` wrong | 13px error on i3wm | Measured values hardcoded: title=22px, border=2px, Chrome UI=87px |
 | `window.Cesium` not found | Bundled build (Vite) has no global | Use `viewer.clock.currentTime.constructor` for JulianDate |
+| Viewport doesn't match window | i3 resize doesn't update Chrome viewport | Use CDP `Emulation.setDeviceMetricsOverride` (`setViewportSize` fails over CDP) |
+| `__animateFollowPitch` not found | Follow useEffect not run yet | `animatePitch()` auto-waits; ensure `followOn()` called first |
 
 ### Camera Behavior at Different Speeds
 
@@ -103,8 +105,11 @@ auto-releases after 2 settle frames (behaves like user drag, not permanent overr
 - Viewport start: `rect.y + title + chrome_ui`, viewport size: `innerWidth x innerHeight`
 
 ### Mobile Viewport for Demo
-- 500x896 viewport (portrait) triggers mobile layout (`isMobile` = height > width)
-- i3 target window size: 504x1020 (adds title + border + Chrome UI)
+- 720x1280 viewport (HD portrait) triggers mobile layout (`isMobile` = height > width)
+- Viewport set via CDP `Emulation.setDeviceMetricsOverride` — `page.setViewportSize()` does NOT work over `connectOverCDP`
+- i3 window resized to fit: adds title=22px, border=2x2px, Chrome UI=87px
+- For final output, scale down with ffmpeg if needed (e.g. `scale=500:-1`)
+- **Don't rely on i3 resize alone** — Chrome viewport does not follow window size changes
 
 ### File Upload via CDP
 Browser file chooser has a ~50MB limit. CDP `DOM.setFileInputFiles` bypasses this

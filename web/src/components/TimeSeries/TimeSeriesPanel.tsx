@@ -22,6 +22,14 @@ const MIN_PANEL_HEIGHT = 120;
 const MAX_PANEL_HEIGHT = 500;
 const DEFAULT_PANEL_HEIGHT = 200;
 
+/** Compute chart width from container width. Exported for testing. */
+export function computeChartWidth(totalWidth: number): number {
+  let cols = 4;
+  if (totalWidth < 768) cols = 1;
+  else if (totalWidth < 1000) cols = 2;
+  return Math.max(200, Math.floor(totalWidth / cols) - 8);
+}
+
 interface TimeSeriesPanelProps {
   statusEpochs: StatusEpochJs[];
   fixEpochs: FixEpochJs[];
@@ -51,11 +59,7 @@ export function TimeSeriesPanel({
     if (!containerRef.current) return;
     const ro = new ResizeObserver((entries) => {
       for (const entry of entries) {
-        const totalWidth = entry.contentRect.width;
-        let cols = 4;
-        if (totalWidth < 600) cols = 1;
-        else if (totalWidth < 1000) cols = 2;
-        setChartWidth(Math.max(200, Math.floor(totalWidth / cols) - 8));
+        setChartWidth(computeChartWidth(entry.contentRect.width));
       }
     });
     ro.observe(containerRef.current);

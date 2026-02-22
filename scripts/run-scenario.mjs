@@ -63,7 +63,7 @@ const scenarioName = args.includes('--scenario')
   ? args[args.indexOf('--scenario') + 1]
   : '2025-11-29-chitose-narita';
 const logFile = args.includes('--log')
-  ? args[args.indexOf('--log') + 1]
+  ? path.resolve(args[args.indexOf('--log') + 1])
   : null;
 const devUrl = args.includes('--url')
   ? args[args.indexOf('--url') + 1]
@@ -141,29 +141,46 @@ async function i3ResizeWindow(page) {
     return;
   }
 
-  // i3wm decoration offsets (measured values, see demo-recording.md)
+  // Target mobile viewport (HD portrait — triggers mobile layout via height > width)
+  const TARGET_VP_W = 720;
+  const TARGET_VP_H = 1280;
+
+  // i3wm decoration offsets (measured values)
   const I3_TITLE = 22;
   const I3_BORDER = 2;
   const CHROME_UI = 87; // tabs + address bar height
+
+  // 1. Set viewport via CDP (page.setViewportSize doesn't work over connectOverCDP)
+  const cdpResize = await page.context().newCDPSession(page);
+  await cdpResize.send('Emulation.setDeviceMetricsOverride', {
+    width: TARGET_VP_W,
+    height: TARGET_VP_H,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await sleep(500);
+
+  // 2. Resize i3 window to fit the viewport
+  const targetW = TARGET_VP_W + 2 * I3_BORDER;
+  const targetH = TARGET_VP_H + I3_TITLE + CHROME_UI + 15;
+  log(`Resizing Chrome window to ${targetW}x${targetH} via i3 (target viewport ${TARGET_VP_W}x${TARGET_VP_H})...`);
+  try {
+    execSync(
+      `i3-msg '[class="Google-chrome"] floating enable, resize set ${targetW} ${targetH}'`,
+    );
+    await sleep(1000);
+  } catch (e) {
+    log(`WARNING: i3 resize failed: ${e.message}`);
+  }
 
   const vp = await page.evaluate(() => ({
     w: window.innerWidth,
     h: window.innerHeight,
   }));
-
-  const targetW = vp.w + 2 * I3_BORDER;
-  const targetH = vp.h + I3_TITLE + CHROME_UI + 15;
-  log(`Resizing Chrome window to ${targetW}x${targetH} via i3...`);
-  try {
-    execSync(
-      `i3-msg '[class="Google-chrome"] floating enable, resize set ${targetW} ${targetH}'`,
-    );
-    await sleep(500);
-  } catch (e) {
-    log(`WARNING: i3 resize failed: ${e.message}`);
+  log(`Viewport after resize: ${vp.w}x${vp.h}`);
+  if (Math.abs(vp.w - TARGET_VP_W) > 4 || Math.abs(vp.h - TARGET_VP_H) > 4) {
+    log(`WARNING: viewport ${vp.w}x${vp.h} does not match target ${TARGET_VP_W}x${TARGET_VP_H}`);
   }
-
-  log(`Viewport: ${vp.w}x${vp.h}`);
 }
 
 /**
@@ -321,7 +338,7 @@ async function setSpeed(page, speed) {
  */
 async function waitForParse(page) {
   log('  waiting for progress bar...');
-  await page.waitForSelector('.progress-bar', { timeout: 30000 });
+  await page.waitForSelector('.progress-container', { timeout: 30000 });
   log('  parse started');
   await page.waitForSelector('.play-btn', { timeout: 600000 });
 }
@@ -359,6 +376,11 @@ function buildContext(page) {
       await sleep(500);
     },
     animatePitch: async (deg, ms = 2000) => {
+      // Wait for Follow useEffect to register the function (needs isFollowing=true + frame)
+      await page.waitForFunction(
+        () => typeof window.__animateFollowPitch === 'function',
+        { timeout: 10000 },
+      );
       await page.evaluate(
         ({ deg, ms }) => window.__animateFollowPitch(deg, ms),
         { deg, ms },
