@@ -29,6 +29,7 @@ pub mod downsample;
 pub mod error;
 pub mod geo;
 pub mod parser;
+pub mod pipeline;
 pub mod quality;
 pub mod record;
 pub mod stats;
@@ -63,6 +64,12 @@ pub use downsample::{
 // Statistics
 pub use stats::{FixStats, PercentileStats, ProviderCount, summarize_fixes};
 
+// Pipeline
+pub use pipeline::{
+    DEFAULT_EPOCH_MS, GnssProcessor, OrientationValue, ProcessingResult, RecordCounts,
+    RotationValue, SENSOR_DECIMATE_MS, SensorTimeSeries, SensorXyz,
+};
+
 /// Convenience re-exports for common usage patterns.
 ///
 /// ```
@@ -71,7 +78,7 @@ pub use stats::{FixStats, PercentileStats, ProviderCount, summarize_fixes};
 pub mod prelude {
     pub use crate::{
         ConstellationType, DeadReckoning, DrConfig, DrPoint, DrSmoothing, DrSource, FilterRecords,
-        FixProvider, FixQuality, FixRecord, ParseError, Record, RecordType, StatusRecord,
-        StreamingParser, smooth_trajectory,
+        FixProvider, FixQuality, FixRecord, GnssProcessor, ParseError, ProcessingResult, Record,
+        RecordType, StatusRecord, StreamingParser, smooth_trajectory,
     };
 }
