@@ -224,7 +224,7 @@ body {
   display: flex;
 }
 
-@media (min-width: 768px) {
+@media (min-width: 768px) and (orientation: landscape) {
   .sidebar {
     transition: width var(--transition-normal), padding var(--transition-normal);
   }
@@ -485,7 +485,7 @@ body {
 /* ═══════════════════════════════════════════════════════════
    Responsive: Tablet (768–1023px)
    ═══════════════════════════════════════════════════════════ */
-@media (max-width: 1023px) {
+@media (max-width: 1023px) and (orientation: landscape) {
   .sidebar {
     width: var(--sidebar-width-sm);
   }
@@ -494,7 +494,7 @@ body {
 /* ═══════════════════════════════════════════════════════════
    Responsive: Mobile (<768px)
    ═══════════════════════════════════════════════════════════ */
-@media (max-width: 767px) {
+@media (max-width: 767px), (orientation: portrait) {
   .app-header h1 {
     font-size: var(--text-sm);
   }

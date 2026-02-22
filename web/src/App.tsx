@@ -49,14 +49,16 @@ export default function App() {
   const [viewer, setViewer] = useState<Cesium.Viewer | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(
-    () => initialSidebarState(window.innerWidth).collapsed,
+    () =>
+      initialSidebarState(window.innerWidth, window.innerHeight).collapsed,
   );
   const [isMobile, setIsMobile] = useState(() =>
-    checkIsMobile(window.innerWidth),
+    checkIsMobile(window.innerWidth, window.innerHeight),
   );
 
   useEffect(() => {
-    const onResize = () => setIsMobile(checkIsMobile(window.innerWidth));
+    const onResize = () =>
+      setIsMobile(checkIsMobile(window.innerWidth, window.innerHeight));
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);

@@ -19,15 +19,24 @@ export const MOBILE_BREAKPOINT = 768;
 /** Height (px) of the sidebar peek area on mobile (visible when collapsed). */
 export const MOBILE_PEEK_HEIGHT = 36;
 
-export function isMobile(viewportWidth: number): boolean {
-  return viewportWidth < MOBILE_BREAKPOINT;
+export function isMobile(
+  viewportWidth: number,
+  viewportHeight?: number,
+): boolean {
+  if (viewportWidth < MOBILE_BREAKPOINT) return true;
+  // Portrait orientation → mobile layout regardless of absolute width
+  if (viewportHeight != null && viewportHeight > viewportWidth) return true;
+  return false;
 }
 
 /** Initial state: collapsed on mobile, visible on desktop. */
-export function initialSidebarState(viewportWidth: number): SidebarState {
+export function initialSidebarState(
+  viewportWidth: number,
+  viewportHeight?: number,
+): SidebarState {
   return {
     open: false,
-    collapsed: viewportWidth < MOBILE_BREAKPOINT,
+    collapsed: isMobile(viewportWidth, viewportHeight),
   };
 }
 
@@ -49,8 +58,11 @@ export function shouldRenderContent(state: SidebarState): boolean {
 }
 
 /** Charts render inside sidebar on mobile, standalone panel on desktop. */
-export function chartsInSidebar(viewportWidth: number): boolean {
-  return isMobile(viewportWidth);
+export function chartsInSidebar(
+  viewportWidth: number,
+  viewportHeight?: number,
+): boolean {
+  return isMobile(viewportWidth, viewportHeight);
 }
 
 /** CSS class for sidebar wrapper element. */

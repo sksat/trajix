@@ -38,14 +38,20 @@ export function PlaybackControls({ viewer }: PlaybackControlsProps) {
   const [elapsedStr, setElapsedStr] = useState("00:00:00");
   const [totalStr, setTotalStr] = useState("00:00:00");
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
+  const [viewportHeight, setViewportHeight] = useState(
+    () => window.innerHeight,
+  );
 
   useEffect(() => {
-    const onResize = () => setViewportWidth(window.innerWidth);
+    const onResize = () => {
+      setViewportWidth(window.innerWidth);
+      setViewportHeight(window.innerHeight);
+    };
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
 
-  const compact = isCompactLayout(viewportWidth);
+  const compact = isCompactLayout(viewportWidth, viewportHeight);
 
   const rafRef = useRef<number>(0);
   const markerRef = useRef<Cesium.Entity | null>(null);
@@ -522,7 +528,7 @@ export function PlaybackControls({ viewer }: PlaybackControlsProps) {
   );
 
   return (
-    <div className={playbackContainerClass(viewportWidth)}>
+    <div className={playbackContainerClass(viewportWidth, viewportHeight)}>
       {compact ? (
         <>
           <div className="playback-row playback-row-actions">
