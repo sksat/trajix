@@ -4,7 +4,7 @@
  * Uses in-memory binary search on sorted satellite_snapshots array
  * for fast lookups at the current animation time.
  */
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import type { SatelliteSnapshotJs } from "../../types/gnss";
 import {
   skyPlotProject,
@@ -58,11 +58,34 @@ function getSatellitesAtTime(
   return snapshots.slice(startIdx, endIdx);
 }
 
+const LEGEND_ITEMS: { constellation: number; label: string }[] = [
+  { constellation: 1, label: "GPS" },
+  { constellation: 3, label: "GLO" },
+  { constellation: 6, label: "GAL" },
+  { constellation: 5, label: "BDS" },
+  { constellation: 4, label: "QZS" },
+];
+
 export function SkyPlot({ snapshots, currentTimeMs }: SkyPlotProps) {
+  const [activeConstellations, setActiveConstellations] = useState<
+    ReadonlySet<number>
+  >(new Set());
+
   const satellites = useMemo(() => {
     const raw = getSatellitesAtTime(snapshots, currentTimeMs);
-    return deduplicateSatellites(raw);
-  }, [snapshots, currentTimeMs]);
+    const deduped = deduplicateSatellites(raw);
+    if (activeConstellations.size === 0) return deduped;
+    return deduped.filter((s) => activeConstellations.has(s.constellation));
+  }, [snapshots, currentTimeMs, activeConstellations]);
+
+  function handleLegendClick(constellation: number) {
+    setActiveConstellations((prev) => {
+      const next = new Set(prev);
+      if (next.has(constellation)) next.delete(constellation);
+      else next.add(constellation);
+      return next;
+    });
+  }
 
   return (
     <div className="sky-plot">
@@ -164,41 +187,31 @@ export function SkyPlot({ snapshots, currentTimeMs }: SkyPlotProps) {
         })}
       </svg>
       <div className="sky-plot-legend">
-        <span className="sky-legend-item">
-          <span
-            className="legend-dot"
-            style={{ background: constellationColor(1) }}
-          />
-          GPS
-        </span>
-        <span className="sky-legend-item">
-          <span
-            className="legend-dot"
-            style={{ background: constellationColor(3) }}
-          />
-          GLO
-        </span>
-        <span className="sky-legend-item">
-          <span
-            className="legend-dot"
-            style={{ background: constellationColor(6) }}
-          />
-          GAL
-        </span>
-        <span className="sky-legend-item">
-          <span
-            className="legend-dot"
-            style={{ background: constellationColor(5) }}
-          />
-          BDS
-        </span>
-        <span className="sky-legend-item">
-          <span
-            className="legend-dot"
-            style={{ background: constellationColor(4) }}
-          />
-          QZS
-        </span>
+        {LEGEND_ITEMS.map(({ constellation, label }) => {
+          const isActive = activeConstellations.has(constellation);
+          const isInactive =
+            activeConstellations.size > 0 && !isActive;
+          const cls = [
+            "sky-legend-item",
+            isActive ? "active" : "",
+            isInactive ? "inactive" : "",
+          ]
+            .filter(Boolean)
+            .join(" ");
+          return (
+            <span
+              key={constellation}
+              className={cls}
+              onClick={() => handleLegendClick(constellation)}
+            >
+              <span
+                className="legend-dot"
+                style={{ background: constellationColor(constellation) }}
+              />
+              {label}
+            </span>
+          );
+        })}
       </div>
     </div>
   );
