@@ -245,18 +245,39 @@ mod tests {
     fn streaming_default_threshold() {
         let mut c = FixQualityClassifier::default();
         // GPS at t=0, NLP at t=5000 (exactly at threshold) → Rejected
-        assert_eq!(c.classify(&make_fix(FixProvider::Gps, 0)), FixQuality::Primary);
-        assert_eq!(c.classify(&make_fix(FixProvider::Nlp, 5000)), FixQuality::Rejected);
+        assert_eq!(
+            c.classify(&make_fix(FixProvider::Gps, 0)),
+            FixQuality::Primary
+        );
+        assert_eq!(
+            c.classify(&make_fix(FixProvider::Nlp, 5000)),
+            FixQuality::Rejected
+        );
         // NLP at t=5001 → GapFallback
-        assert_eq!(c.classify(&make_fix(FixProvider::Nlp, 5001)), FixQuality::GapFallback);
+        assert_eq!(
+            c.classify(&make_fix(FixProvider::Nlp, 5001)),
+            FixQuality::GapFallback
+        );
     }
 
     #[test]
     fn streaming_tracks_state_across_calls() {
         let mut c = FixQualityClassifier::new(1000);
-        assert_eq!(c.classify(&make_fix(FixProvider::Nlp, 100)), FixQuality::GapFallback);
-        assert_eq!(c.classify(&make_fix(FixProvider::Gps, 200)), FixQuality::Primary);
-        assert_eq!(c.classify(&make_fix(FixProvider::Nlp, 500)), FixQuality::Rejected);
-        assert_eq!(c.classify(&make_fix(FixProvider::Nlp, 1500)), FixQuality::GapFallback);
+        assert_eq!(
+            c.classify(&make_fix(FixProvider::Nlp, 100)),
+            FixQuality::GapFallback
+        );
+        assert_eq!(
+            c.classify(&make_fix(FixProvider::Gps, 200)),
+            FixQuality::Primary
+        );
+        assert_eq!(
+            c.classify(&make_fix(FixProvider::Nlp, 500)),
+            FixQuality::Rejected
+        );
+        assert_eq!(
+            c.classify(&make_fix(FixProvider::Nlp, 1500)),
+            FixQuality::GapFallback
+        );
     }
 }

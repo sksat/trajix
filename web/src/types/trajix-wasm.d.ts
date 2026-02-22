@@ -1,8 +1,8 @@
 /**
- * Augment trajix-wasm module to declare FixRecord.
+ * Augment trajix-wasm module with types from trajix core (no tsify).
  *
- * FixRecord lives in trajix (no tsify), so the WASM package's .d.ts
- * references it without defining it. We provide the definition here.
+ * Types defined in trajix-core don't have tsify, so wasm-pack's .d.ts
+ * references them without defining them. We provide definitions here.
  */
 // This import makes this file a module, so `declare module` is treated as
 // augmentation rather than replacement.
@@ -28,7 +28,9 @@ declare module "trajix-wasm" {
     solution_type: string | null;
   }
 
-  interface SatelliteSnapshotJs {
+  type FixQuality = "Primary" | "GapFallback" | "Rejected";
+
+  interface SatelliteSnapshot {
     time_ms: number;
     constellation: number;
     svid: number;
@@ -38,7 +40,6 @@ declare module "trajix-wasm" {
     used_in_fix: boolean;
   }
 
-  /** Decimated sample (moved to trajix core, no tsify). */
   interface DecimatedSample<V> {
     time_ms: number;
     value: V;

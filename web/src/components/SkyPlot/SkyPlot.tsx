@@ -5,7 +5,7 @@
  * for fast lookups at the current animation time.
  */
 import { useMemo, useState } from "react";
-import type { SatelliteSnapshotJs } from "../../types/gnss";
+import type { SatelliteSnapshot } from "../../types/gnss";
 import {
   skyPlotProject,
   cn0ToColor,
@@ -21,7 +21,7 @@ const SVG_SIZE = CENTER * 2;
 const ELEVATION_RINGS = [0, 15, 30, 45, 60, 75];
 
 interface SkyPlotProps {
-  snapshots: SatelliteSnapshotJs[];
+  snapshots: SatelliteSnapshot[];
   currentTimeMs: number;
 }
 
@@ -29,7 +29,7 @@ interface SkyPlotProps {
  * Binary search for the first index where snapshot.time_ms >= target.
  */
 function lowerBound(
-  snapshots: SatelliteSnapshotJs[],
+  snapshots: SatelliteSnapshot[],
   target: number,
 ): number {
   let lo = 0;
@@ -46,9 +46,9 @@ function lowerBound(
  * Get satellites visible at the given time (±500ms window).
  */
 function getSatellitesAtTime(
-  snapshots: SatelliteSnapshotJs[],
+  snapshots: SatelliteSnapshot[],
   timeMs: number,
-): SatelliteSnapshotJs[] {
+): SatelliteSnapshot[] {
   if (snapshots.length === 0 || timeMs <= 0) return [];
 
   const halfWindow = 500;

@@ -2,11 +2,11 @@
 import { describe, it, expect } from "vitest";
 import { render, fireEvent } from "@testing-library/react";
 import { SkyPlot } from "./SkyPlot";
-import type { SatelliteSnapshotJs } from "../../types/gnss";
+import type { SatelliteSnapshot } from "../../types/gnss";
 
 function makeSatSnapshot(
-  overrides?: Partial<SatelliteSnapshotJs>,
-): SatelliteSnapshotJs {
+  overrides?: Partial<SatelliteSnapshot>,
+): SatelliteSnapshot {
   return {
     time_ms: 1000,
     constellation: 1,
@@ -34,7 +34,7 @@ describe("SkyPlot component", () => {
   });
 
   it("renders satellite markers for given time", () => {
-    const snapshots: SatelliteSnapshotJs[] = [
+    const snapshots: SatelliteSnapshot[] = [
       makeSatSnapshot({ constellation: 1, svid: 10, time_ms: 1000 }),
       makeSatSnapshot({ constellation: 6, svid: 4, time_ms: 1000 }),
     ];
@@ -48,7 +48,7 @@ describe("SkyPlot component", () => {
   });
 
   it("does not render satellite markers outside time window", () => {
-    const snapshots: SatelliteSnapshotJs[] = [
+    const snapshots: SatelliteSnapshot[] = [
       makeSatSnapshot({ time_ms: 5000 }),
     ];
     const { container } = render(
@@ -78,7 +78,7 @@ describe("SkyPlot component", () => {
 });
 
 describe("SkyPlot constellation filter", () => {
-  const mixedSnapshots: SatelliteSnapshotJs[] = [
+  const mixedSnapshots: SatelliteSnapshot[] = [
     makeSatSnapshot({ constellation: 1, svid: 10, time_ms: 1000 }), // GPS
     makeSatSnapshot({ constellation: 1, svid: 12, time_ms: 1000 }), // GPS
     makeSatSnapshot({ constellation: 3, svid: 8, time_ms: 1000 }),  // GLONASS

@@ -346,14 +346,21 @@ Status,,37,1,3,9,1600875010,28.40,10.0,45.0,1,1,1,21.0";
         // Feed a Fix (track timestamp)
         let mut fix = parse_lines(
             "Fix,GPS,36.212,140.097,281.3,0.0,3.79,,1771641748000,0.07,,2091905471128467,3.66,0,,,",
-        ).into_iter().next().unwrap().unwrap();
+        )
+        .into_iter()
+        .next()
+        .unwrap()
+        .unwrap();
         inferer.annotate(&mut fix);
         assert_eq!(inferer.last_timestamp_ms(), Some(1771641748000));
 
         // Feed a Status with no timestamp (should be inferred)
-        let mut status = parse_lines(
-            "Status,,46,0,1,2,1575420030,25.70,192.285,31.194557,1,1,1,22.1",
-        ).into_iter().next().unwrap().unwrap();
+        let mut status =
+            parse_lines("Status,,46,0,1,2,1575420030,25.70,192.285,31.194557,1,1,1,22.1")
+                .into_iter()
+                .next()
+                .unwrap()
+                .unwrap();
         inferer.annotate(&mut status);
         if let Record::Status(s) = &status {
             assert_eq!(s.unix_time_ms, Some(1771641748000));

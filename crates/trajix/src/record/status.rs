@@ -1,9 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::error::ParseError;
-use crate::types::{
-    ConstellationType, deserialize_constellation_u8, serialize_constellation_u8,
-};
+use crate::types::{ConstellationType, deserialize_constellation_u8, serialize_constellation_u8};
 
 /// Expected number of CSV fields in a Status record (including the "Status" prefix).
 const STATUS_FIELD_COUNT: usize = 14;
@@ -290,9 +288,18 @@ mod tests {
     #[test]
     fn snapshot_from_status_preserves_constellation() {
         let cases = [
-            ("Status,,46,0,1,5,1575420030,30.0,90.0,45.0,1,1,1,20.0", ConstellationType::Gps),
-            ("Status,,46,1,3,9,1600875010,28.0,10.0,45.0,1,1,1,21.0", ConstellationType::Glonass),
-            ("Status,,46,2,5,26,1575420030,24.0,318.0,81.0,1,1,1,17.0", ConstellationType::BeiDou),
+            (
+                "Status,,46,0,1,5,1575420030,30.0,90.0,45.0,1,1,1,20.0",
+                ConstellationType::Gps,
+            ),
+            (
+                "Status,,46,1,3,9,1600875010,28.0,10.0,45.0,1,1,1,21.0",
+                ConstellationType::Glonass,
+            ),
+            (
+                "Status,,46,2,5,26,1575420030,24.0,318.0,81.0,1,1,1,17.0",
+                ConstellationType::BeiDou,
+            ),
         ];
         for (line, expected) in cases {
             let status = StatusRecord::parse(line).unwrap();
