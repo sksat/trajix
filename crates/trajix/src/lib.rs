@@ -24,6 +24,9 @@
 //! }
 //! ```
 
+pub mod altitude;
+pub mod anomaly;
+pub mod coverage;
 pub mod dead_reckoning;
 pub mod downsample;
 pub mod error;
@@ -62,8 +65,25 @@ pub use downsample::{
     DecimatedSample, LttbValue, Sample, StreamingDecimator, decimate_by_time, lttb, lttb_indices,
 };
 
+// Altitude analysis
+pub use altitude::{
+    ProviderInterleavingReport, SmoothConfig, SpikeFilterConfig, SpikeFilterStats,
+    VerticalVelocity, VerticalVelocityConfig, VerticalVelocityReport,
+    analyze_provider_interleaving, analyze_vertical_velocity, filter_altitude_spikes,
+    smooth_altitudes,
+};
+
+// Anomaly detection
+pub use anomaly::{ImpliedSpeed, JumpConfig, JumpReport, SpeedBucket, analyze_jumps};
+
+// Coverage gap analysis
+pub use coverage::{CoverageGap, CoverageReport, GapConfig, NlpGapAnalysis, analyze_coverage};
+
 // Statistics
-pub use stats::{FixStats, PercentileStats, ProviderCount, summarize_fixes};
+pub use stats::{
+    FixStats, PercentileStats, ProviderCount, ProviderDetailedStats, percentiles,
+    provider_detailed_stats, summarize_fixes,
+};
 
 // Pipeline
 pub use pipeline::{

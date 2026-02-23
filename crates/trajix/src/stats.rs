@@ -29,6 +29,7 @@ pub struct PercentileStats {
     pub median: f64,
     pub p90: f64,
     pub p95: f64,
+    pub p99: f64,
     pub max: f64,
 }
 
@@ -132,15 +133,75 @@ pub fn summarize_fixes(fixes: &[FixRecord]) -> FixStats {
     }
 }
 
-fn percentiles(sorted: &[f64]) -> PercentileStats {
+/// Compute percentile statistics from a pre-sorted slice of f64 values.
+///
+/// The input must be sorted in ascending order and non-empty.
+///
+/// # Panics
+///
+/// Panics if `sorted` is empty.
+pub fn percentiles(sorted: &[f64]) -> PercentileStats {
     let n = sorted.len();
     PercentileStats {
         min: sorted[0],
         median: sorted[n / 2],
         p90: sorted[((n as f64 * 0.9) as usize).min(n - 1)],
         p95: sorted[((n as f64 * 0.95) as usize).min(n - 1)],
+        p99: sorted[((n as f64 * 0.99) as usize).min(n - 1)],
         max: sorted[n - 1],
     }
+}
+
+/// Per-provider detailed statistics including accuracy distribution and missing field counts.
+#[derive(Debug, Clone)]
+pub struct ProviderDetailedStats {
+    pub provider: FixProvider,
+    pub count: usize,
+    /// Accuracy percentiles (meters), if accuracy data is available.
+    pub accuracy: Option<PercentileStats>,
+    /// Count of fixes missing altitude.
+    pub missing_altitude: usize,
+    /// Count of fixes missing speed.
+    pub missing_speed: usize,
+    /// Count of fixes missing bearing.
+    pub missing_bearing: usize,
+}
+
+/// Compute per-provider detailed statistics.
+///
+/// Returns one entry per distinct provider found, in order: GPS, FLP, NLP.
+pub fn provider_detailed_stats(fixes: &[FixRecord]) -> Vec<ProviderDetailedStats> {
+    let mut by_provider: std::collections::HashMap<FixProvider, Vec<&FixRecord>> =
+        std::collections::HashMap::new();
+    for f in fixes {
+        by_provider.entry(f.provider).or_default().push(f);
+    }
+
+    let mut result = Vec::new();
+    for provider in [FixProvider::Gps, FixProvider::Flp, FixProvider::Nlp] {
+        let Some(pf) = by_provider.get(&provider) else {
+            continue;
+        };
+
+        let mut accuracies: Vec<f64> = pf.iter().filter_map(|f| f.accuracy_m).collect();
+        accuracies.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let accuracy = if accuracies.is_empty() {
+            None
+        } else {
+            Some(percentiles(&accuracies))
+        };
+
+        result.push(ProviderDetailedStats {
+            provider,
+            count: pf.len(),
+            accuracy,
+            missing_altitude: pf.iter().filter(|f| f.altitude_m.is_none()).count(),
+            missing_speed: pf.iter().filter(|f| f.speed_mps.is_none()).count(),
+            missing_bearing: pf.iter().filter(|f| f.bearing_deg.is_none()).count(),
+        });
+    }
+
+    result
 }
 
 #[cfg(test)]
@@ -282,5 +343,139 @@ mod tests {
         ];
         let stats = summarize_fixes(&fixes);
         assert!(stats.accuracy.is_none());
+    }
+
+    // --- percentiles() tests ---
+
+    #[test]
+    fn percentiles_single_element() {
+        let p = percentiles(&[42.0]);
+        assert_eq!(p.min, 42.0);
+        assert_eq!(p.median, 42.0);
+        assert_eq!(p.p90, 42.0);
+        assert_eq!(p.p95, 42.0);
+        assert_eq!(p.p99, 42.0);
+        assert_eq!(p.max, 42.0);
+    }
+
+    #[test]
+    fn percentiles_100_elements() {
+        let sorted: Vec<f64> = (1..=100).map(|i| i as f64).collect();
+        let p = percentiles(&sorted);
+        assert_eq!(p.min, 1.0);
+        assert_eq!(p.median, 51.0);
+        assert_eq!(p.p90, 91.0);
+        assert_eq!(p.p95, 96.0);
+        assert_eq!(p.p99, 100.0);
+        assert_eq!(p.max, 100.0);
+    }
+
+    #[test]
+    fn percentiles_two_elements() {
+        let p = percentiles(&[1.0, 10.0]);
+        assert_eq!(p.min, 1.0);
+        assert_eq!(p.max, 10.0);
+        assert_eq!(p.median, 10.0); // index 1 of 2
+    }
+
+    // --- provider_detailed_stats() tests ---
+
+    fn make_full_fix(
+        provider: FixProvider,
+        time_ms: i64,
+        accuracy: Option<f64>,
+        altitude: Option<f64>,
+        speed: Option<f64>,
+        bearing: Option<f64>,
+    ) -> FixRecord {
+        FixRecord {
+            provider,
+            latitude_deg: 36.0,
+            longitude_deg: 140.0,
+            altitude_m: altitude,
+            speed_mps: speed,
+            accuracy_m: accuracy,
+            bearing_deg: bearing,
+            unix_time_ms: time_ms,
+            speed_accuracy_mps: None,
+            bearing_accuracy_deg: None,
+            elapsed_realtime_ns: None,
+            vertical_accuracy_m: None,
+            mock_location: false,
+            num_used_signals: None,
+            vertical_speed_accuracy_mps: None,
+            solution_type: None,
+        }
+    }
+
+    #[test]
+    fn provider_detailed_stats_empty() {
+        let result = provider_detailed_stats(&[]);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn provider_detailed_stats_single_provider() {
+        let fixes = vec![
+            make_full_fix(
+                FixProvider::Gps,
+                0,
+                Some(5.0),
+                Some(100.0),
+                Some(1.0),
+                Some(90.0),
+            ),
+            make_full_fix(FixProvider::Gps, 1000, Some(10.0), None, None, None),
+        ];
+        let result = provider_detailed_stats(&fixes);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].provider, FixProvider::Gps);
+        assert_eq!(result[0].count, 2);
+        assert!(result[0].accuracy.is_some());
+        assert_eq!(result[0].accuracy.as_ref().unwrap().min, 5.0);
+        assert_eq!(result[0].accuracy.as_ref().unwrap().max, 10.0);
+        assert_eq!(result[0].missing_altitude, 1);
+        assert_eq!(result[0].missing_speed, 1);
+        assert_eq!(result[0].missing_bearing, 1);
+    }
+
+    #[test]
+    fn provider_detailed_stats_multi_provider() {
+        let fixes = vec![
+            make_full_fix(
+                FixProvider::Gps,
+                0,
+                Some(3.0),
+                Some(100.0),
+                Some(1.0),
+                Some(0.0),
+            ),
+            make_full_fix(FixProvider::Flp, 1000, Some(15.0), Some(95.0), None, None),
+            make_full_fix(FixProvider::Nlp, 2000, None, None, None, None),
+        ];
+        let result = provider_detailed_stats(&fixes);
+        assert_eq!(result.len(), 3);
+        // GPS
+        assert_eq!(result[0].provider, FixProvider::Gps);
+        assert_eq!(result[0].missing_altitude, 0);
+        // FLP
+        assert_eq!(result[1].provider, FixProvider::Flp);
+        assert_eq!(result[1].missing_speed, 1);
+        // NLP
+        assert_eq!(result[2].provider, FixProvider::Nlp);
+        assert!(result[2].accuracy.is_none());
+        assert_eq!(result[2].missing_altitude, 1);
+    }
+
+    #[test]
+    fn provider_detailed_stats_no_accuracy() {
+        let fixes = vec![
+            make_full_fix(FixProvider::Nlp, 0, None, None, None, None),
+            make_full_fix(FixProvider::Nlp, 1000, None, None, None, None),
+        ];
+        let result = provider_detailed_stats(&fixes);
+        assert_eq!(result.len(), 1);
+        assert!(result[0].accuracy.is_none());
+        assert_eq!(result[0].missing_altitude, 2);
     }
 }
