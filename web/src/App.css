@@ -111,10 +111,36 @@ body {
 
 .app-header h1 {
   margin: 0;
-  font-size: var(--text-md);
+  font-size: 1.5rem;
   font-weight: var(--weight-semibold);
   letter-spacing: 0.06em;
   color: var(--text-accent);
+}
+
+.title-link {
+  all: unset;
+  font: inherit;
+  color: inherit;
+  letter-spacing: inherit;
+}
+
+button.title-link {
+  cursor: pointer;
+}
+
+button.title-link:hover {
+  opacity: 0.8;
+}
+
+.github-link {
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  transition: color var(--transition-fast);
+}
+
+.github-link:hover {
+  color: var(--text-primary);
 }
 
 .device-badge {
@@ -496,7 +522,7 @@ body {
    ═══════════════════════════════════════════════════════════ */
 @media (max-width: 767px), (orientation: portrait) {
   .app-header h1 {
-    font-size: var(--text-sm);
+    font-size: var(--text-lg);
   }
 
   .device-badge {

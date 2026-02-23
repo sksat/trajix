@@ -14,6 +14,12 @@ export function useGnssData() {
   const [state, setState] = useState<GnssDataState>({ status: "idle" });
   const workerRef = useRef<Worker | null>(null);
 
+  const reset = useCallback(() => {
+    workerRef.current?.terminate();
+    workerRef.current = null;
+    setState({ status: "idle" });
+  }, []);
+
   const processFile = useCallback(async (file: File) => {
     // Clean up previous worker
     workerRef.current?.terminate();
@@ -69,7 +75,7 @@ export function useGnssData() {
     worker.postMessage({ type: "start", totalBytes: file.size });
   }, []);
 
-  return { state, processFile };
+  return { state, processFile, reset };
 }
 
 async function sendChunks(worker: Worker, file: File) {
