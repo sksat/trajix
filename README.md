@@ -1,8 +1,8 @@
 # trajix
 
-**https://sksat.github.io/trajix/**
+GNSS/positioning data parser and analysis library for Rust, with a companion [web app](https://sksat.github.io/trajix/) that visualizes [Android GNSS Logger](https://play.google.com/store/apps/details?id=com.google.android.apps.location.gps.gnsslogger) logs (1GB+) in-browser via WebAssembly — 3D flight trajectories, sky plots, and time-series charts.
 
-GNSS/positioning data visualization web app. Parses 1GB+ [Android GNSS Logger](https://play.google.com/store/apps/details?id=com.google.android.apps.location.gps.gnsslogger) log files in-browser via WebAssembly, and visualizes flight trajectories on 3D maps with sky plots and time-series charts.
+![Mt. Tsukuba hiking track with 3D terrain, sky plot, and time-series charts](assets/screenshot.png)
 
 <table>
   <tr>
@@ -19,11 +19,17 @@ GNSS/positioning data visualization web app. Parses 1GB+ [Android GNSS Logger](h
 
 ## Features
 
-- **In-browser WebAssembly parser** — streams 1GB+ files without server upload
-- **3D flight visualization** — CesiumJS with GSI terrain tiles, camera follow mode
+**Web app** ([live demo](https://sksat.github.io/trajix/))
+- **3D visualization** — CesiumJS with GSI terrain tiles, camera follow mode
 - **Sky plot** — real-time satellite positions with constellation filtering
 - **Time-series charts** — CN0, satellite count, accuracy, speed (uPlot)
 - **DuckDB-wasm** — SQL queries on parsed data in-browser
+
+**Library** ([crates.io](https://crates.io/crates/trajix))
+- **Streaming parser** — parse 1GB+ GNSS Logger CSV files with constant memory
+- **Fix quality classification** — GPS/FLP/NLP separation with gap-aware logic
+- **Dead Reckoning** — GNSS + IMU fusion for GNSS-degraded segments
+- **Analysis** — altitude filtering, anomaly detection, coverage gaps, statistics
 
 ## Rust library
 
