@@ -17,6 +17,10 @@ import {
   checkLineOfSight,
   approxCameraPosition,
   occlusionNudgeDirection,
+  detectUserZoom,
+  applyRangeScale,
+  decayRangeScale,
+  applyCenterOffset,
 } from "../../utils/cameraFollow";
 import {
   isCompactLayout,
@@ -237,8 +241,18 @@ export function PlaybackControls({ viewer }: PlaybackControlsProps) {
     //   range ≈ 360m, pitch ≈ -56°, heading = 0 (looking north)
     let heading = 0;
     let pitch = Cesium.Math.toRadians(-56);
-    let range = 360;
+    let autoRange = 360; // unscaled range for lerpRange (converges to speed target)
+    let range = 360;     // display range = autoRange * rangeScale (used for lookAt)
     let initialized = false;
+
+    // User zoom override (multiplicative scale on auto-computed range)
+    let rangeScale = 1.0;
+    let lastSetRange = 0;
+    let lastCenter: Cesium.Cartesian3 | null = null;
+
+    // User center offset via WASD (ENU meters)
+    let centerOffsetEast = 0;
+    let centerOffsetNorth = 0;
 
     // Expose setters for demo recording.
     // Frame-counter approach: override camera-read for N frames, then auto-clear.
@@ -298,6 +312,9 @@ export function PlaybackControls({ viewer }: PlaybackControlsProps) {
     const SPEED_ALPHA = 0.02;
     let wasAnimating = false;
 
+    // WASD key tracking for center offset (Set declared before onPreRender for closure access)
+    const keysHeld = new Set<string>();
+
     const onPreRender = () => {
       const pos = marker.position?.getValue(viewer.clock.currentTime);
       if (!pos) return;
@@ -310,6 +327,9 @@ export function PlaybackControls({ viewer }: PlaybackControlsProps) {
         prevTargetLon = null;
         prevTargetLat = null;
         speedMpf = 0;
+        // Prevent false zoom detection on first animating frame
+        lastCenter = null;
+        lastSetRange = 0;
         // Sync headingOffset with user's heading chosen during pause
         if (bearing.hasBearing) {
           headingOffset = angleDiff(heading, bearing.bearing);
@@ -344,6 +364,9 @@ export function PlaybackControls({ viewer }: PlaybackControlsProps) {
           prevTargetLon = null;
           prevTargetLat = null;
           speedMpf = 0;
+          // Prevent false zoom detection after seek
+          lastCenter = null;
+          lastSetRange = 0;
         } else {
           smoothed.longitude += dLon * H_LERP;
           smoothed.latitude += dLat * H_LERP;
@@ -377,6 +400,10 @@ export function PlaybackControls({ viewer }: PlaybackControlsProps) {
             viewer.camera.positionWC,
             centerCart,
           );
+          // Sync autoRange so lerpRange starts from current zoom on play resume
+          autoRange = range;
+          // Reset zoom scale — the direct range read already captures user intent
+          rangeScale = 1.0;
         } else {
           // Animating — detect heading drag to accumulate offset
           const drag = detectUserDrag(
@@ -386,11 +413,24 @@ export function PlaybackControls({ viewer }: PlaybackControlsProps) {
             0.03,
           );
           headingOffset = drag.headingOffset;
+          if (drag.dragged) {
+            heading = viewer.camera.heading;
+          }
 
           // Also detect user pitch changes (middle-drag)
           const camPitch = viewer.camera.pitch;
           if (Math.abs(camPitch - pitch) > 0.03) {
             pitch = camPitch;
+          }
+
+          // Detect user zoom (scroll wheel / right-drag)
+          if (lastCenter) {
+            const actualRange = Cesium.Cartesian3.distance(
+              viewer.camera.positionWC,
+              lastCenter,
+            );
+            const zoom = detectUserZoom(actualRange, lastSetRange, rangeScale);
+            rangeScale = zoom.rangeScale;
           }
         }
       }
@@ -449,11 +489,17 @@ export function PlaybackControls({ viewer }: PlaybackControlsProps) {
         );
 
         // Speed-adaptive target range (smooth lerp toward expected steady-state)
+        // IMPORTANT: lerpRange operates on autoRange (unscaled) to avoid
+        // compounding — applying scale to the lerp result and feeding it back
+        // would cause exponential range growth (runaway zoom).
         const rangeTarget = computeTargetRange(speedMpf, {
           lerpFactor: H_LERP,
           fovRadians: narrowFov,
         });
-        range = lerpRange(range, rangeTarget);
+        autoRange = lerpRange(autoRange, rangeTarget);
+
+        // Apply user zoom scale to get display range
+        range = applyRangeScale(autoRange, rangeScale, 0);
 
         // Hard floor: actual lag-based minimum to prevent off-screen entity
         const actualLag = estimateFrameSpeed(
@@ -466,18 +512,48 @@ export function PlaybackControls({ viewer }: PlaybackControlsProps) {
           fovRadians: narrowFov,
         });
         range = Math.max(range, visMin);
+
+        // Slow decay of rangeScale toward 1.0
+        rangeScale = decayRangeScale(rangeScale);
       }
 
-      // Apply camera with single lookAt
-      const center = Cesium.Cartesian3.fromRadians(
+      // WASD center offset: camera-heading-relative pan
+      const PAN_SPEED = 0.003; // fraction of range per frame
+      const panStep = range * PAN_SPEED;
+      if (keysHeld.has("KeyW") || keysHeld.has("KeyS") || keysHeld.has("KeyA") || keysHeld.has("KeyD")) {
+        const sinH = Math.sin(heading);
+        const cosH = Math.cos(heading);
+        if (keysHeld.has("KeyW")) { centerOffsetEast += sinH * panStep; centerOffsetNorth += cosH * panStep; }
+        if (keysHeld.has("KeyS")) { centerOffsetEast -= sinH * panStep; centerOffsetNorth -= cosH * panStep; }
+        if (keysHeld.has("KeyD")) { centerOffsetEast += cosH * panStep; centerOffsetNorth -= sinH * panStep; }
+        if (keysHeld.has("KeyA")) { centerOffsetEast -= cosH * panStep; centerOffsetNorth += sinH * panStep; }
+      }
+      if (keysHeld.has("Escape")) {
+        centerOffsetEast = 0;
+        centerOffsetNorth = 0;
+        rangeScale = 1.0;
+        keysHeld.delete("Escape");
+      }
+
+      // Apply center offset (WASD pan)
+      const offsetCenter = applyCenterOffset(
         smoothed.longitude,
         smoothed.latitude,
         smoothed.height,
+        centerOffsetEast,
+        centerOffsetNorth,
+      );
+      const center = Cesium.Cartesian3.fromRadians(
+        offsetCenter.lon,
+        offsetCenter.lat,
+        offsetCenter.height,
       );
       viewer.camera.lookAt(
         center,
         new Cesium.HeadingPitchRange(heading, pitch, range),
       );
+      lastCenter = center;
+      lastSetRange = range;
 
       // Terrain collision — adjust pitch if camera is underground
       const camCarto = Cesium.Cartographic.fromCartesian(
@@ -507,8 +583,15 @@ export function PlaybackControls({ viewer }: PlaybackControlsProps) {
 
     viewer.scene.preRender.addEventListener(onPreRender);
 
+    const onKeyDown = (e: KeyboardEvent) => { keysHeld.add(e.code); };
+    const onKeyUp = (e: KeyboardEvent) => { keysHeld.delete(e.code); };
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+
     return () => {
       viewer.scene.preRender.removeEventListener(onPreRender);
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
       // Unlock camera so user can freely pan/rotate
       viewer.camera.lookAtTransform(Cesium.Matrix4.IDENTITY);
     };

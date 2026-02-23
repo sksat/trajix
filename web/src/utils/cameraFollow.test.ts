@@ -17,6 +17,10 @@ import {
   checkLineOfSight,
   approxCameraPosition,
   occlusionNudgeDirection,
+  detectUserZoom,
+  applyRangeScale,
+  decayRangeScale,
+  applyCenterOffset,
 } from "./cameraFollow";
 
 const toRad = (deg: number) => (deg * Math.PI) / 180;
@@ -1222,5 +1226,304 @@ describe("occlusionNudgeDirection", () => {
     );
     // Both sides have 0 occlusion, occPlus <= occMinus → +1
     expect(dir).toBe(1);
+  });
+});
+
+// ────────────────────────────────────────────
+// detectUserZoom
+// ────────────────────────────────────────────
+
+describe("detectUserZoom", () => {
+  it("no zoom when actual matches expected", () => {
+    const r = detectUserZoom(1000, 1000, 1.0);
+    expect(r.zoomed).toBe(false);
+    expect(r.rangeScale).toBe(1.0);
+  });
+
+  it("no zoom for sub-threshold change (2%)", () => {
+    const r = detectUserZoom(1020, 1000, 1.0);
+    expect(r.zoomed).toBe(false);
+    expect(r.rangeScale).toBe(1.0);
+  });
+
+  it("detects zoom out (scroll up, range increases 20%)", () => {
+    const r = detectUserZoom(1200, 1000, 1.0);
+    expect(r.zoomed).toBe(true);
+    expect(r.rangeScale).toBeCloseTo(1.2, 2);
+  });
+
+  it("detects zoom in (scroll down, range decreases 20%)", () => {
+    const r = detectUserZoom(800, 1000, 1.0);
+    expect(r.zoomed).toBe(true);
+    expect(r.rangeScale).toBeCloseTo(0.8, 2);
+  });
+
+  it("accumulates scale from previous value", () => {
+    // Already zoomed to 1.5x, user zooms out another 20%
+    const r = detectUserZoom(1200, 1000, 1.5);
+    expect(r.zoomed).toBe(true);
+    expect(r.rangeScale).toBeCloseTo(1.8, 2); // 1.5 * 1.2
+  });
+
+  it("clamps scale to maximum (10.0)", () => {
+    const r = detectUserZoom(5000, 1000, 5.0);
+    expect(r.zoomed).toBe(true);
+    expect(r.rangeScale).toBe(10.0); // 5.0 * 5.0 = 25 → clamped
+  });
+
+  it("clamps scale to minimum (0.1)", () => {
+    const r = detectUserZoom(100, 1000, 0.15);
+    expect(r.zoomed).toBe(true);
+    expect(r.rangeScale).toBe(0.1); // 0.15 * 0.1 = 0.015 → clamped
+  });
+
+  it("respects custom threshold", () => {
+    // 8% change with 10% threshold → not detected
+    const r = detectUserZoom(1080, 1000, 1.0, 0.1);
+    expect(r.zoomed).toBe(false);
+    expect(r.rangeScale).toBe(1.0);
+  });
+
+  it("handles near-zero expected range safely", () => {
+    const r = detectUserZoom(100, 0.001, 1.0);
+    expect(r.zoomed).toBe(false);
+    expect(r.rangeScale).toBe(1.0);
+  });
+
+  it("airplane natural center drift does not trigger zoom", () => {
+    // At 250m/s × 50x, range ≈ 7000m. Center drift ≈ 17m/frame.
+    // Ratio: 7017/7000 = 1.0024 → below 5% threshold.
+    const r = detectUserZoom(7017, 7000, 1.0);
+    expect(r.zoomed).toBe(false);
+  });
+
+  it("walking natural center drift does not trigger zoom", () => {
+    const r = detectUserZoom(200.1, 200, 1.0);
+    expect(r.zoomed).toBe(false);
+  });
+});
+
+// ────────────────────────────────────────────
+// applyRangeScale
+// ────────────────────────────────────────────
+
+describe("applyRangeScale", () => {
+  it("scale 1.0 passes through computed range", () => {
+    expect(applyRangeScale(500, 1.0, 200)).toBe(500);
+  });
+
+  it("scale 2.0 doubles the range", () => {
+    expect(applyRangeScale(500, 2.0, 200)).toBe(1000);
+  });
+
+  it("scale 0.5 halves the range", () => {
+    expect(applyRangeScale(500, 0.5, 200)).toBe(250);
+  });
+
+  it("respects visMin hard floor", () => {
+    // 500 * 0.1 = 50, but visMin = 200
+    expect(applyRangeScale(500, 0.1, 200)).toBe(200);
+  });
+
+  it("user zoom out beyond visMin still works", () => {
+    expect(applyRangeScale(300, 3.0, 200)).toBe(900);
+  });
+
+  it("visMin 0 allows any zoom level", () => {
+    expect(applyRangeScale(1000, 0.1, 0)).toBe(100);
+  });
+});
+
+// ────────────────────────────────────────────
+// decayRangeScale
+// ────────────────────────────────────────────
+
+describe("decayRangeScale", () => {
+  it("scale 1.0 remains 1.0", () => {
+    expect(decayRangeScale(1.0)).toBe(1.0);
+  });
+
+  it("decays toward 1.0 from above", () => {
+    const decayed = decayRangeScale(2.0);
+    expect(decayed).toBeLessThan(2.0);
+    expect(decayed).toBeGreaterThan(1.0);
+  });
+
+  it("decays toward 1.0 from below", () => {
+    const decayed = decayRangeScale(0.5);
+    expect(decayed).toBeGreaterThan(0.5);
+    expect(decayed).toBeLessThan(1.0);
+  });
+
+  it("converges to 1.0 after many iterations", () => {
+    let scale = 3.0;
+    for (let i = 0; i < 10000; i++) {
+      scale = decayRangeScale(scale);
+    }
+    expect(scale).toBeCloseTo(1.0, 3);
+  });
+
+  it("faster factor converges sooner", () => {
+    let slow = 2.0;
+    let fast = 2.0;
+    for (let i = 0; i < 1000; i++) {
+      slow = decayRangeScale(slow, 0.001);
+      fast = decayRangeScale(fast, 0.01);
+    }
+    expect(Math.abs(fast - 1.0)).toBeLessThan(Math.abs(slow - 1.0));
+  });
+
+  it("snaps to 1.0 when close enough", () => {
+    // After heavy decay, values very near 1.0 should snap
+    const r = decayRangeScale(1.0005, 0.5);
+    // 1.0 + 0.0005 * 0.5 = 1.00025 → |1.00025 - 1| = 0.00025 < 0.001 → snap
+    expect(r).toBe(1.0);
+  });
+});
+
+// ────────────────────────────────────────────
+// applyCenterOffset
+// ────────────────────────────────────────────
+
+describe("applyCenterOffset", () => {
+  const R = 6371000;
+
+  it("zero offset returns input unchanged", () => {
+    const r = applyCenterOffset(toRad(139), toRad(35), 100, 0, 0);
+    expect(r.lon).toBe(toRad(139));
+    expect(r.lat).toBe(toRad(35));
+    expect(r.height).toBe(100);
+  });
+
+  it("east offset increases longitude", () => {
+    const r = applyCenterOffset(toRad(139), toRad(35), 100, 100, 0);
+    expect(r.lon).toBeGreaterThan(toRad(139));
+    expect(r.lat).toBe(toRad(35));
+  });
+
+  it("north offset increases latitude", () => {
+    const r = applyCenterOffset(toRad(139), toRad(35), 100, 0, 100);
+    expect(r.lat).toBeGreaterThan(toRad(35));
+    expect(r.lon).toBe(toRad(139));
+  });
+
+  it("at equator 1m east gives expected delta", () => {
+    const r = applyCenterOffset(0, 0, 0, 1, 0);
+    // At equator, cos(0) = 1, so dLon = 1 / R
+    expect(r.lon).toBeCloseTo(1 / R, 12);
+  });
+
+  it("at high latitude cosine correction applied", () => {
+    const lat60 = toRad(60);
+    const r = applyCenterOffset(0, lat60, 0, 100, 0);
+    // dLon = 100 / (R * cos(60°)) = 100 / (R * 0.5)
+    const expectedDLon = 100 / (R * Math.cos(lat60));
+    expect(r.lon).toBeCloseTo(expectedDLon, 12);
+  });
+});
+
+// ────────────────────────────────────────────
+// Integration simulation — user zoom override
+// ────────────────────────────────────────────
+
+describe("follow simulation — user zoom override", () => {
+  it("user zoom out 3x persists during constant speed (correct: separate autoRange)", () => {
+    let autoRange = 200;
+    const rangeScale = 3.0;
+    const speedMpf = 1.2; // walking at 50x
+
+    // Stabilize auto range first
+    for (let i = 0; i < 60; i++) {
+      const target = computeTargetRange(speedMpf);
+      autoRange = lerpRange(autoRange, target);
+    }
+    const stableAutoRange = autoRange;
+
+    // Continue 300 frames with scale=3.0 — display range must stay bounded
+    for (let i = 0; i < 300; i++) {
+      const target = computeTargetRange(speedMpf);
+      autoRange = lerpRange(autoRange, target);
+      const displayRange = applyRangeScale(autoRange, rangeScale, 0);
+      // Display range should be ~3x the auto range, NOT growing unboundedly
+      expect(displayRange).toBeCloseTo(stableAutoRange * 3.0, -1);
+      expect(displayRange).toBeLessThan(stableAutoRange * 4.0);
+    }
+  });
+
+  it("(bug proof) scaling lerpRange output in-place causes runaway zoom", () => {
+    // Demonstrates the compounding bug: applying rangeScale to the same
+    // variable that lerpRange reads from causes exponential growth.
+    let range = 200;
+    const rangeScale = 2.0;
+    const target = 200;
+
+    for (let i = 0; i < 10; i++) {
+      range = lerpRange(range, target);  // starts from already-scaled value
+      range = applyRangeScale(range, rangeScale, 0);  // doubles again!
+    }
+    // After just 10 frames, range has grown far beyond target * scale = 400
+    expect(range).toBeGreaterThan(1000);
+  });
+
+  it("(correct) separate autoRange prevents runaway zoom", () => {
+    let autoRange = 200;
+    const rangeScale = 2.0;
+    const target = 200;
+
+    for (let i = 0; i < 300; i++) {
+      autoRange = lerpRange(autoRange, target);
+      const displayRange = applyRangeScale(autoRange, rangeScale, 0);
+      // Display range stays stable at target * scale = 400
+      expect(displayRange).toBeCloseTo(400, -1);
+      expect(displayRange).toBeLessThan(500);
+    }
+  });
+
+  it("user zoom in clamped by visMin", () => {
+    const speedMpf = 208; // airplane at 50x
+    let range = 7000;
+    const rangeScale = 0.1; // user zooms way in
+
+    const target = computeTargetRange(speedMpf);
+    range = lerpRange(range, target);
+
+    const lag = computeLagDistance(speedMpf, 0.08);
+    const visMin = computeVisibilityRange(lag);
+
+    const finalRange = applyRangeScale(range, rangeScale, visMin);
+    // Scaled range (0.1x) is below visMin → clamped
+    expect(finalRange).toBe(visMin);
+  });
+
+  it("rangeScale decays after speed transition", () => {
+    let rangeScale = 3.0;
+    // 3000 frames (~50s at 60fps) of decay
+    for (let i = 0; i < 3000; i++) {
+      rangeScale = decayRangeScale(rangeScale);
+    }
+    expect(rangeScale).toBeLessThan(2.5);
+    expect(rangeScale).toBeGreaterThan(1.0);
+  });
+
+  it("center offset applied correctly with heading rotation", () => {
+    const heading = toRad(90); // facing east
+    const panStep = 10; // meters
+
+    let offsetEast = 0;
+    let offsetNorth = 0;
+
+    // Press W (forward) when heading east → should increase east offset
+    const sinH = Math.sin(heading);
+    const cosH = Math.cos(heading);
+    offsetEast += sinH * panStep;
+    offsetNorth += cosH * panStep;
+
+    // sin(90°)=1, cos(90°)=0 → forward = pure east
+    expect(offsetEast).toBeCloseTo(10, 5);
+    expect(offsetNorth).toBeCloseTo(0, 5);
+
+    const r = applyCenterOffset(toRad(139), toRad(35), 100, offsetEast, offsetNorth);
+    expect(r.lon).toBeGreaterThan(toRad(139));
+    expect(r.lat).toBeCloseTo(toRad(35), 10);
   });
 });

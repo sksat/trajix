@@ -324,6 +324,106 @@ export function lerpRange(
 }
 
 // ────────────────────────────────────────────
+// User zoom override
+// ────────────────────────────────────────────
+
+export interface ZoomDetectResult {
+  rangeScale: number;
+  zoomed: boolean;
+}
+
+/**
+ * Detect if the user scrolled to zoom and update the multiplicative range scale.
+ * Compares actual camera-center distance with what we set last frame.
+ *
+ * @param actualRange - distance from camera to the center used in previous lookAt
+ * @param expectedRange - the range value passed to lookAt last frame
+ * @param currentScale - current multiplicative zoom factor
+ * @param threshold - minimum ratio change to consider as user input (default: 0.05 = 5%)
+ */
+export function detectUserZoom(
+  actualRange: number,
+  expectedRange: number,
+  currentScale: number,
+  threshold?: number,
+): ZoomDetectResult {
+  const thresh = threshold ?? 0.05;
+
+  // Guard: skip detection for near-zero expected range
+  if (expectedRange < 1.0) {
+    return { rangeScale: currentScale, zoomed: false };
+  }
+
+  const ratio = actualRange / expectedRange;
+
+  if (Math.abs(ratio - 1.0) > thresh) {
+    const raw = currentScale * ratio;
+    const clamped = Math.max(0.1, Math.min(10.0, raw));
+    return { rangeScale: clamped, zoomed: true };
+  }
+
+  return { rangeScale: currentScale, zoomed: false };
+}
+
+/**
+ * Apply user zoom scale to auto-computed range, then enforce hard floor.
+ */
+export function applyRangeScale(
+  computedRange: number,
+  rangeScale: number,
+  visMin: number,
+): number {
+  return Math.max(computedRange * rangeScale, visMin);
+}
+
+/**
+ * Decay rangeScale toward 1.0.
+ * Uses exponential decay: scale = 1 + (scale - 1) * (1 - factor).
+ * Snaps to 1.0 when close enough to avoid float drift.
+ *
+ * @param rangeScale - current scale
+ * @param factor - per-frame decay rate (default: 0.001, very slow)
+ */
+export function decayRangeScale(
+  rangeScale: number,
+  factor?: number,
+): number {
+  const f = factor ?? 0.001;
+  const result = 1.0 + (rangeScale - 1.0) * (1.0 - f);
+  if (Math.abs(result - 1.0) < 0.001) return 1.0;
+  return result;
+}
+
+// ────────────────────────────────────────────
+// Center offset (pan)
+// ────────────────────────────────────────────
+
+export interface CenterOffsetResult {
+  lon: number;
+  lat: number;
+  height: number;
+}
+
+/**
+ * Apply an ENU offset (east/north in meters) to a geodetic center.
+ * Uses flat-Earth approximation (valid for offsets < ~10km).
+ */
+export function applyCenterOffset(
+  centerLon: number,
+  centerLat: number,
+  centerHeight: number,
+  offsetEast: number,
+  offsetNorth: number,
+): CenterOffsetResult {
+  const R = 6371000;
+  return {
+    lon: centerLon + offsetEast / (R * Math.cos(centerLat)),
+    lat: centerLat + offsetNorth / R,
+    height: centerHeight,
+  };
+}
+
+// ────────────────────────────────────────────
 // Terrain collision — pitch adjustment
 // ────────────────────────────────────────────
 
