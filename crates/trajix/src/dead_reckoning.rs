@@ -130,6 +130,13 @@ pub struct DeviceQuaternion {
     pub w: f64,
 }
 
+impl DeviceQuaternion {
+    /// Convert to nalgebra `UnitQuaternion`, mapping Android (x,y,z,w) → nalgebra (w,x,y,z).
+    pub(crate) fn to_unit_quaternion(&self) -> UnitQuaternion<f64> {
+        UnitQuaternion::new_normalize(Quaternion::new(self.w, self.x, self.y, self.z))
+    }
+}
+
 // ────────────────────────────────────────────
 // Configuration
 // ────────────────────────────────────────────
@@ -378,10 +385,7 @@ impl DeadReckoning {
 
     /// Update device attitude from a quaternion sample.
     pub fn push_attitude(&mut self, attitude: &AttitudeSample) {
-        let q = &attitude.quaternion;
-        self.attitude = Some(UnitQuaternion::new_normalize(Quaternion::new(
-            q.w, q.x, q.y, q.z,
-        )));
+        self.attitude = Some(attitude.quaternion.to_unit_quaternion());
     }
 
     // ── Parser-coupled convenience API ──
@@ -609,7 +613,7 @@ mod tests {
 
     /// Helper: create a UnitQuaternion from Android (x, y, z, w) convention.
     fn quat(x: f64, y: f64, z: f64, w: f64) -> UnitQuaternion<f64> {
-        UnitQuaternion::new_normalize(Quaternion::new(w, x, y, z))
+        DeviceQuaternion { x, y, z, w }.to_unit_quaternion()
     }
 
     // ── Quaternion convention ──
