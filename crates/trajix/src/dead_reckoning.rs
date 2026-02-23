@@ -8,7 +8,7 @@
 //! 1. Receive quaternion attitude from `GameRotationVector` sensor
 //! 2. Transform accelerometer readings from device frame to world frame (ENU)
 //! 3. Remove gravity component from world-frame acceleration
-//! 4. Integrate acceleration → velocity → position (Euler method)
+//! 4. Integrate acceleration → velocity → position (semi-implicit Euler)
 //! 5. Convert local ENU position to lat/lon using the GNSS anchor point
 //!
 //! DR activates when GNSS accuracy exceeds a configurable threshold and
@@ -27,12 +27,129 @@ const GRAVITY_MS2: f64 = 9.80665;
 const METERS_PER_DEG_LAT: f64 = 111_132.0;
 
 // ────────────────────────────────────────────
-// Dead Reckoning types
+// Output types
 // ────────────────────────────────────────────
+
+/// Source of a trajectory point.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PointSource {
+    /// Position from a GNSS fix (GPS, FLP, etc.).
+    Gnss,
+    /// Position estimated by dead reckoning (IMU integration from last GNSS anchor).
+    DeadReckoning,
+}
+
+/// A single trajectory point (GNSS or dead-reckoned).
+#[derive(Debug, Clone)]
+pub struct TrajectoryPoint {
+    pub time_ms: i64,
+    pub latitude_deg: f64,
+    pub longitude_deg: f64,
+    pub altitude_m: f64,
+    pub source: PointSource,
+}
+
+/// Post-processing smoothing method for dead-reckoned segments.
+///
+/// Applied after [`DeadReckoning::finalize`] via [`smooth_trajectory`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SmoothingMethod {
+    /// Replace DR points with straight line between bounding GNSS fixes.
+    Linear,
+    /// Keep DR trajectory shape, distribute endpoint error with t² weighting.
+    /// Preserves turns and shape from IMU while correcting drift.
+    EndpointConstrained,
+}
+
+// ────────────────────────────────────────────
+// Input types (parser-independent)
+// ────────────────────────────────────────────
+
+/// A GNSS position fix for dead reckoning input.
+///
+/// Parser-independent: construct directly or via `From<&FixRecord>`.
+#[derive(Debug, Clone)]
+pub struct GnssFix {
+    pub time_ms: i64,
+    pub latitude_deg: f64,
+    pub longitude_deg: f64,
+    pub altitude_m: f64,
+    pub accuracy_m: Option<f64>,
+    pub speed_mps: Option<f64>,
+    pub bearing_deg: Option<f64>,
+}
+
+/// An IMU accelerometer sample for dead reckoning input.
+///
+/// Acceleration should be calibrated (bias removed), in device frame, m/s².
+/// Includes gravity (i.e., "proper acceleration": stationary phone reads +9.8 on Z).
+///
+/// Parser-independent: construct directly or via `From<&UncalibratedSensorRecord>`.
+#[derive(Debug, Clone)]
+pub struct ImuSample {
+    pub time_ms: i64,
+    /// Calibrated acceleration in device frame \[x, y, z\] (m/s²).
+    pub accel: [f64; 3],
+}
+
+impl ImuSample {
+    /// Construct from uncalibrated raw acceleration and estimated bias.
+    ///
+    /// Computes `accel = raw - bias` for each axis.
+    pub fn from_uncalibrated(time_ms: i64, raw: [f64; 3], bias: [f64; 3]) -> Self {
+        Self {
+            time_ms,
+            accel: [raw[0] - bias[0], raw[1] - bias[1], raw[2] - bias[2]],
+        }
+    }
+}
+
+/// Device attitude as a quaternion for dead reckoning input.
+///
+/// Uses the Android `GameRotationVector` convention: quaternion components
+/// (x, y, z, w) representing the rotation from ENU (East-North-Up) world
+/// frame to the device frame. The conjugate rotates device → ENU.
+///
+/// Parser-independent: construct directly or via `From<&GameRotationVectorRecord>`.
+#[derive(Debug, Clone)]
+pub struct AttitudeSample {
+    pub time_ms: i64,
+    pub quaternion: DeviceQuaternion,
+}
+
+/// Device orientation quaternion (Android convention).
+///
+/// Components follow the Android sensor convention: (x, y, z, w)
+/// where the quaternion represents the rotation from ENU world frame
+/// to the device frame.
+#[derive(Debug, Clone, Copy)]
+pub struct DeviceQuaternion {
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+    pub w: f64,
+}
+
+// ────────────────────────────────────────────
+// Configuration
+// ────────────────────────────────────────────
+
+/// Numerical integration method for dead reckoning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum IntegrationMethod {
+    /// Semi-implicit Euler: update velocity first (v += a·dt), then
+    /// position (p += v·dt). Simple, symplectic, and adequate for
+    /// short DR segments (typically < 2 minutes).
+    #[default]
+    SemiImplicitEuler,
+}
 
 /// Configuration for the Dead Reckoning processor.
 #[derive(Debug, Clone)]
-pub struct DrConfig {
+pub struct DeadReckoningConfig {
+    /// Numerical integration method.
+    pub integration: IntegrationMethod,
     /// GNSS accuracy threshold (meters).
     /// Fixes with `accuracy_m > threshold` are considered degraded.
     pub accuracy_threshold_m: f64,
@@ -47,9 +164,10 @@ pub struct DrConfig {
     pub max_dt_s: f64,
 }
 
-impl Default for DrConfig {
+impl Default for DeadReckoningConfig {
     fn default() -> Self {
         Self {
+            integration: IntegrationMethod::default(),
             accuracy_threshold_m: 30.0,
             zupt_speed_threshold_mps: 0.3,
             max_dr_duration_ms: 120_000,
@@ -59,35 +177,48 @@ impl Default for DrConfig {
     }
 }
 
-/// Source of a trajectory point.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DrSource {
-    Gnss,
-    DeadReckoning,
+// ────────────────────────────────────────────
+// From impls: parser types → input types
+// ────────────────────────────────────────────
+
+impl From<&FixRecord> for GnssFix {
+    fn from(f: &FixRecord) -> Self {
+        Self {
+            time_ms: f.unix_time_ms,
+            latitude_deg: f.latitude_deg,
+            longitude_deg: f.longitude_deg,
+            altitude_m: f.altitude_m.unwrap_or(0.0),
+            accuracy_m: f.accuracy_m,
+            speed_mps: f.speed_mps,
+            bearing_deg: f.bearing_deg,
+        }
+    }
 }
 
-/// Post-processing smoothing method for DR segments.
-///
-/// Applied after [`DeadReckoning::finalize`] via [`smooth_trajectory`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DrSmoothing {
-    /// Replace DR points with straight line between bounding GNSS fixes.
-    Linear,
-    /// Keep DR trajectory shape, distribute endpoint error with t² weighting.
-    /// Preserves turns and shape from IMU while correcting drift.
-    EndpointConstrained,
+impl From<&UncalibratedSensorRecord> for ImuSample {
+    fn from(s: &UncalibratedSensorRecord) -> Self {
+        Self {
+            time_ms: s.utc_time_ms,
+            accel: [s.x - s.bias_x, s.y - s.bias_y, s.z - s.bias_z],
+        }
+    }
 }
 
-/// A single trajectory point.
-#[derive(Debug, Clone)]
-pub struct DrPoint {
-    pub time_ms: i64,
-    pub latitude_deg: f64,
-    pub longitude_deg: f64,
-    pub altitude_m: f64,
-    pub source: DrSource,
+impl From<&GameRotationVectorRecord> for AttitudeSample {
+    fn from(g: &GameRotationVectorRecord) -> Self {
+        Self {
+            time_ms: g.utc_time_ms,
+            quaternion: DeviceQuaternion {
+                x: g.x,
+                y: g.y,
+                z: g.z,
+                w: g.w,
+            },
+        }
+    }
 }
 
+// ────────────────────────────────────────────
 // ────────────────────────────────────────────
 // Internal state
 // ────────────────────────────────────────────
@@ -116,18 +247,19 @@ struct DrState {
 
 /// Streaming Dead Reckoning processor.
 ///
-/// Feed records in chronological order via [`push`] or the type-specific
-/// methods, then call [`finalize`] to get the merged trajectory.
+/// Feed sensor data in chronological order via [`push_gnss`], [`push_imu`],
+/// [`push_attitude`], or dispatch parsed records via [`push_record`], then
+/// call [`finalize`] to get the merged trajectory.
 pub struct DeadReckoning {
-    config: DrConfig,
+    config: DeadReckoningConfig,
     last_fix: Option<GnssAnchor>,
     state: Option<DrState>,
     attitude: Option<UnitQuaternion<f64>>,
-    trajectory: Vec<DrPoint>,
+    trajectory: Vec<TrajectoryPoint>,
 }
 
 impl DeadReckoning {
-    pub fn new(config: DrConfig) -> Self {
+    pub fn new(config: DeadReckoningConfig) -> Self {
         Self {
             config,
             last_fix: None,
@@ -137,27 +269,13 @@ impl DeadReckoning {
         }
     }
 
-    /// Dispatch a parsed record.
-    ///
-    /// Returns `Some(DrPoint)` when a trajectory point is emitted (GNSS fix or DR estimate).
-    /// Only Fix, UncalAccel, and GameRotationVector are used; others ignored.
-    pub fn push(&mut self, record: &Record) -> Option<DrPoint> {
-        match record {
-            Record::Fix(f) => self.push_fix(f),
-            Record::UncalAccel(a) => self.push_accel(a),
-            Record::GameRotationVector(g) => {
-                self.push_attitude(g);
-                None
-            }
-            _ => None,
-        }
-    }
+    // ── Parser-independent API ──
 
     /// Process a GNSS fix.
     ///
-    /// Returns `Some(DrPoint)` with `source: Gnss` when the fix has good accuracy.
+    /// Returns `Some(TrajectoryPoint)` with `source: Gnss` when the fix has good accuracy.
     /// Returns `None` for degraded fixes (which start or continue DR internally).
-    pub fn push_fix(&mut self, fix: &FixRecord) -> Option<DrPoint> {
+    pub fn push_gnss(&mut self, fix: &GnssFix) -> Option<TrajectoryPoint> {
         let accuracy = fix.accuracy_m.unwrap_or(f64::MAX);
 
         if accuracy <= self.config.accuracy_threshold_m {
@@ -166,16 +284,16 @@ impl DeadReckoning {
             self.last_fix = Some(GnssAnchor {
                 lat_deg: fix.latitude_deg,
                 lon_deg: fix.longitude_deg,
-                alt_m: fix.altitude_m.unwrap_or(0.0),
+                alt_m: fix.altitude_m,
                 speed_mps: fix.speed_mps,
                 bearing_deg: fix.bearing_deg,
             });
-            let point = DrPoint {
-                time_ms: fix.unix_time_ms,
+            let point = TrajectoryPoint {
+                time_ms: fix.time_ms,
                 latitude_deg: fix.latitude_deg,
                 longitude_deg: fix.longitude_deg,
-                altitude_m: fix.altitude_m.unwrap_or(0.0),
-                source: DrSource::Gnss,
+                altitude_m: fix.altitude_m,
+                source: PointSource::Gnss,
             };
             self.trajectory.push(point.clone());
             Some(point)
@@ -185,13 +303,13 @@ impl DeadReckoning {
                 if let Some(anchor) = &self.last_fix {
                     let vel = velocity_from_anchor(anchor);
                     self.state = Some(DrState {
-                        time_ms: fix.unix_time_ms,
+                        time_ms: fix.time_ms,
                         pos_enu: Vector3::zeros(),
                         vel_enu: vel,
                         anchor_lat_deg: anchor.lat_deg,
                         anchor_lon_deg: anchor.lon_deg,
                         anchor_alt_m: anchor.alt_m,
-                        dr_start_ms: fix.unix_time_ms,
+                        dr_start_ms: fix.time_ms,
                     });
                 }
             }
@@ -199,27 +317,20 @@ impl DeadReckoning {
         }
     }
 
-    /// Update attitude from a GameRotationVector reading.
-    pub fn push_attitude(&mut self, grv: &GameRotationVectorRecord) {
-        self.attitude = Some(UnitQuaternion::new_normalize(Quaternion::new(
-            grv.w, grv.x, grv.y, grv.z,
-        )));
-    }
-
-    /// Process an uncalibrated accelerometer reading.
+    /// Process an IMU accelerometer sample.
     ///
-    /// Returns `Some(DrPoint)` with `source: DeadReckoning` when DR is active
+    /// Returns `Some(TrajectoryPoint)` with `source: DeadReckoning` when DR is active
     /// and a new position estimate is produced.
-    pub fn push_accel(&mut self, accel: &UncalibratedSensorRecord) -> Option<DrPoint> {
+    pub fn push_imu(&mut self, sample: &ImuSample) -> Option<TrajectoryPoint> {
         let attitude = self.attitude?;
         let state = self.state.as_mut()?;
 
         // Check max duration
-        if accel.utc_time_ms - state.dr_start_ms > self.config.max_dr_duration_ms {
+        if sample.time_ms - state.dr_start_ms > self.config.max_dr_duration_ms {
             return None;
         }
 
-        let dt_s = (accel.utc_time_ms - state.time_ms) as f64 / 1000.0;
+        let dt_s = (sample.time_ms - state.time_ms) as f64 / 1000.0;
 
         if dt_s < self.config.min_dt_s {
             return None;
@@ -227,16 +338,12 @@ impl DeadReckoning {
         if dt_s > self.config.max_dt_s {
             // Large gap: reset velocity, don't integrate
             state.vel_enu = Vector3::zeros();
-            state.time_ms = accel.utc_time_ms;
+            state.time_ms = sample.time_ms;
             return None;
         }
 
-        // Calibrated acceleration in device frame
-        let a_device = Vector3::new(
-            accel.x - accel.bias_x,
-            accel.y - accel.bias_y,
-            accel.z - accel.bias_z,
-        );
+        // Acceleration in device frame (already calibrated)
+        let a_device = Vector3::new(sample.accel[0], sample.accel[1], sample.accel[2]);
 
         // Rotate device → ENU using conjugate of Android quaternion
         let a_world = attitude.conjugate().transform_vector(&a_device);
@@ -244,7 +351,7 @@ impl DeadReckoning {
         // Remove gravity (accelerometer reads +g on Z when stationary)
         let a_linear = Vector3::new(a_world.x, a_world.y, a_world.z - GRAVITY_MS2);
 
-        // Euler integration
+        // Semi-implicit Euler integration
         state.vel_enu += a_linear * dt_s;
 
         // ZUPT: zero velocity if magnitude below threshold
@@ -253,34 +360,63 @@ impl DeadReckoning {
         }
 
         state.pos_enu += state.vel_enu * dt_s;
-        state.time_ms = accel.utc_time_ms;
+        state.time_ms = sample.time_ms;
 
         // Convert to lat/lon and emit
         let (lat, lon) = enu_to_latlon(state.pos_enu, state.anchor_lat_deg, state.anchor_lon_deg);
 
-        let point = DrPoint {
-            time_ms: accel.utc_time_ms,
+        let point = TrajectoryPoint {
+            time_ms: sample.time_ms,
             latitude_deg: lat,
             longitude_deg: lon,
             altitude_m: state.anchor_alt_m + state.pos_enu.z,
-            source: DrSource::DeadReckoning,
+            source: PointSource::DeadReckoning,
         };
         self.trajectory.push(point.clone());
         Some(point)
     }
 
+    /// Update device attitude from a quaternion sample.
+    pub fn push_attitude(&mut self, attitude: &AttitudeSample) {
+        let q = &attitude.quaternion;
+        self.attitude = Some(UnitQuaternion::new_normalize(Quaternion::new(
+            q.w, q.x, q.y, q.z,
+        )));
+    }
+
+    // ── Parser-coupled convenience API ──
+
+    /// Dispatch a parsed record.
+    ///
+    /// Returns `Some(TrajectoryPoint)` when a trajectory point is emitted.
+    /// Only Fix, UncalAccel, and GameRotationVector are used; others ignored.
+    pub fn push_record(&mut self, record: &Record) -> Option<TrajectoryPoint> {
+        match record {
+            Record::Fix(f) => self.push_gnss(&GnssFix::from(f)),
+            Record::UncalAccel(a) => self.push_imu(&ImuSample::from(a)),
+            Record::GameRotationVector(g) => {
+                self.push_attitude(&AttitudeSample::from(g));
+                None
+            }
+            _ => None,
+        }
+    }
+
     /// Process all records from an iterator and return the full trajectory.
     ///
-    /// Convenience method that feeds all records and calls [`finalize`].
-    pub fn process_all(mut self, records: impl IntoIterator<Item = Record>) -> Vec<DrPoint> {
+    /// Convenience method that feeds all records and calls [`finalize`](Self::finalize).
+    pub fn process_all(
+        mut self,
+        records: impl IntoIterator<Item = Record>,
+    ) -> Vec<TrajectoryPoint> {
         for record in records {
-            self.push(&record);
+            self.push_record(&record);
         }
         self.finalize()
     }
 
     /// Return the trajectory.
-    pub fn finalize(self) -> Vec<DrPoint> {
+    pub fn finalize(self) -> Vec<TrajectoryPoint> {
         self.trajectory
     }
 }
@@ -341,27 +477,28 @@ struct DrSegment {
 }
 
 /// Find all DR segments bounded by GNSS points on both sides.
-fn find_dr_segments(trajectory: &[DrPoint]) -> Vec<DrSegment> {
+fn find_dr_segments(trajectory: &[TrajectoryPoint]) -> Vec<DrSegment> {
     let mut segments = Vec::new();
     let mut i = 0;
     while i < trajectory.len() {
-        if trajectory[i].source == DrSource::DeadReckoning {
+        if trajectory[i].source == PointSource::DeadReckoning {
             // Find preceding GNSS point
             let start_gnss = if i > 0 {
                 (0..i)
                     .rev()
-                    .find(|&j| trajectory[j].source == DrSource::Gnss)
+                    .find(|&j| trajectory[j].source == PointSource::Gnss)
             } else {
                 None
             };
             // Find end of DR run
             let dr_start = i;
-            while i < trajectory.len() && trajectory[i].source == DrSource::DeadReckoning {
+            while i < trajectory.len() && trajectory[i].source == PointSource::DeadReckoning {
                 i += 1;
             }
             let dr_end = i - 1;
             // Find following GNSS point
-            let end_gnss = (i..trajectory.len()).find(|&j| trajectory[j].source == DrSource::Gnss);
+            let end_gnss =
+                (i..trajectory.len()).find(|&j| trajectory[j].source == PointSource::Gnss);
 
             if let (Some(sg), Some(eg)) = (start_gnss, end_gnss) {
                 segments.push(DrSegment {
@@ -387,8 +524,11 @@ fn find_dr_segments(trajectory: &[DrPoint]) -> Vec<DrSegment> {
 ///
 /// Smoothing operates in local ENU coordinates for geometric correctness,
 /// and only adjusts horizontal position (altitude is preserved from DR).
-pub fn smooth_trajectory(trajectory: &[DrPoint], method: DrSmoothing) -> Vec<DrPoint> {
-    let mut result: Vec<DrPoint> = trajectory.to_vec();
+pub fn smooth_trajectory(
+    trajectory: &[TrajectoryPoint],
+    method: SmoothingMethod,
+) -> Vec<TrajectoryPoint> {
+    let mut result: Vec<TrajectoryPoint> = trajectory.to_vec();
     let segments = find_dr_segments(&result);
 
     for seg in &segments {
@@ -407,7 +547,7 @@ pub fn smooth_trajectory(trajectory: &[DrPoint], method: DrSmoothing) -> Vec<DrP
             latlon_to_enu(end.latitude_deg, end.longitude_deg, anchor_lat, anchor_lon);
 
         match method {
-            DrSmoothing::Linear => {
+            SmoothingMethod::Linear => {
                 for pt in &mut result[seg.dr_start..=seg.dr_end] {
                     let t = pt.time_ms as f64;
                     let alpha = (t - t_start) / dt;
@@ -419,7 +559,7 @@ pub fn smooth_trajectory(trajectory: &[DrPoint], method: DrSmoothing) -> Vec<DrP
                     // altitude preserved
                 }
             }
-            DrSmoothing::EndpointConstrained => {
+            SmoothingMethod::EndpointConstrained => {
                 // Error = end_gnss_enu - last_dr_enu (horizontal only)
                 let last_dr = &trajectory[seg.dr_end];
                 let (last_dr_east, last_dr_north) = latlon_to_enu(
@@ -652,25 +792,33 @@ mod tests {
 
     #[test]
     fn dr_stationary() {
-        let mut dr = DeadReckoning::new(DrConfig::default());
+        let mut dr = DeadReckoning::new(DeadReckoningConfig::default());
 
         // Good fix establishes anchor
-        dr.push_fix(&make_fix(1000, 5.0, Some(0.0), None));
+        dr.push_gnss(&GnssFix::from(&make_fix(1000, 5.0, Some(0.0), None)));
         // Degraded fix triggers DR
-        dr.push_fix(&make_fix(2000, 50.0, None, None));
+        dr.push_gnss(&GnssFix::from(&make_fix(2000, 50.0, None, None)));
         // Identity attitude (phone flat)
-        dr.push_attitude(&make_grv(2000, 0.0, 0.0, 0.0, 1.0));
+        dr.push_attitude(&AttitudeSample::from(&make_grv(2000, 0.0, 0.0, 0.0, 1.0)));
 
         // Gravity-only accel for 1 second at 100Hz
         for i in 1..=100 {
-            dr.push_accel(&make_accel(2000 + i * 10, 0.0, 0.0, GRAVITY_MS2));
+            dr.push_imu(&ImuSample::from(&make_accel(
+                2000 + i * 10,
+                0.0,
+                0.0,
+                GRAVITY_MS2,
+            )));
         }
 
         let traj = dr.finalize();
-        assert_eq!(traj[0].source, DrSource::Gnss);
+        assert_eq!(traj[0].source, PointSource::Gnss);
 
         // DR points should stay at anchor (stationary)
-        for p in traj.iter().filter(|p| p.source == DrSource::DeadReckoning) {
+        for p in traj
+            .iter()
+            .filter(|p| p.source == PointSource::DeadReckoning)
+        {
             assert!(
                 approx_eq(p.latitude_deg, 36.0, 1e-6),
                 "lat drift: {}",
@@ -686,23 +834,26 @@ mod tests {
 
     #[test]
     fn dr_gnss_fusion() {
-        let mut dr = DeadReckoning::new(DrConfig::default());
+        let mut dr = DeadReckoning::new(DeadReckoningConfig::default());
 
-        dr.push_fix(&make_fix(1000, 5.0, Some(0.0), None));
-        dr.push_fix(&make_fix(2000, 50.0, None, None)); // DR starts
-        dr.push_attitude(&make_grv(2000, 0.0, 0.0, 0.0, 1.0));
-        dr.push_accel(&make_accel(2010, 0.0, 0.0, GRAVITY_MS2));
-        dr.push_accel(&make_accel(2020, 0.0, 0.0, GRAVITY_MS2));
-        dr.push_fix(&make_fix(3000, 5.0, Some(0.0), None)); // DR ends
+        dr.push_gnss(&GnssFix::from(&make_fix(1000, 5.0, Some(0.0), None)));
+        dr.push_gnss(&GnssFix::from(&make_fix(2000, 50.0, None, None))); // DR starts
+        dr.push_attitude(&AttitudeSample::from(&make_grv(2000, 0.0, 0.0, 0.0, 1.0)));
+        dr.push_imu(&ImuSample::from(&make_accel(2010, 0.0, 0.0, GRAVITY_MS2)));
+        dr.push_imu(&ImuSample::from(&make_accel(2020, 0.0, 0.0, GRAVITY_MS2)));
+        dr.push_gnss(&GnssFix::from(&make_fix(3000, 5.0, Some(0.0), None))); // DR ends
 
         // Accel after good fix → no DR
-        dr.push_accel(&make_accel(3010, 0.0, 0.0, GRAVITY_MS2));
+        dr.push_imu(&ImuSample::from(&make_accel(3010, 0.0, 0.0, GRAVITY_MS2)));
 
         let traj = dr.finalize();
-        let gnss: Vec<_> = traj.iter().filter(|p| p.source == DrSource::Gnss).collect();
+        let gnss: Vec<_> = traj
+            .iter()
+            .filter(|p| p.source == PointSource::Gnss)
+            .collect();
         let dr_pts: Vec<_> = traj
             .iter()
-            .filter(|p| p.source == DrSource::DeadReckoning)
+            .filter(|p| p.source == PointSource::DeadReckoning)
             .collect();
 
         assert_eq!(gnss.len(), 2);
@@ -711,61 +862,66 @@ mod tests {
 
     #[test]
     fn dr_max_duration() {
-        let config = DrConfig {
+        let config = DeadReckoningConfig {
             max_dr_duration_ms: 100,
-            ..DrConfig::default()
+            ..DeadReckoningConfig::default()
         };
         let mut dr = DeadReckoning::new(config);
 
-        dr.push_fix(&make_fix(1000, 5.0, Some(0.0), None));
-        dr.push_fix(&make_fix(2000, 50.0, None, None));
-        dr.push_attitude(&make_grv(2000, 0.0, 0.0, 0.0, 1.0));
+        dr.push_gnss(&GnssFix::from(&make_fix(1000, 5.0, Some(0.0), None)));
+        dr.push_gnss(&GnssFix::from(&make_fix(2000, 50.0, None, None)));
+        dr.push_attitude(&AttitudeSample::from(&make_grv(2000, 0.0, 0.0, 0.0, 1.0)));
 
-        dr.push_accel(&make_accel(2050, 0.0, 0.0, GRAVITY_MS2)); // within
-        dr.push_accel(&make_accel(2200, 0.0, 0.0, GRAVITY_MS2)); // beyond
+        dr.push_imu(&ImuSample::from(&make_accel(2050, 0.0, 0.0, GRAVITY_MS2))); // within
+        dr.push_imu(&ImuSample::from(&make_accel(2200, 0.0, 0.0, GRAVITY_MS2))); // beyond
 
         let traj = dr.finalize();
         let dr_pts: Vec<_> = traj
             .iter()
-            .filter(|p| p.source == DrSource::DeadReckoning)
+            .filter(|p| p.source == PointSource::DeadReckoning)
             .collect();
         assert_eq!(dr_pts.len(), 1);
     }
 
     #[test]
     fn dr_no_anchor_no_dr() {
-        let mut dr = DeadReckoning::new(DrConfig::default());
+        let mut dr = DeadReckoning::new(DeadReckoningConfig::default());
 
         // Bad fix without prior good fix → no DR
-        dr.push_fix(&make_fix(1000, 50.0, None, None));
-        dr.push_attitude(&make_grv(1000, 0.0, 0.0, 0.0, 1.0));
-        dr.push_accel(&make_accel(1010, 0.0, 0.0, GRAVITY_MS2));
+        dr.push_gnss(&GnssFix::from(&make_fix(1000, 50.0, None, None)));
+        dr.push_attitude(&AttitudeSample::from(&make_grv(1000, 0.0, 0.0, 0.0, 1.0)));
+        dr.push_imu(&ImuSample::from(&make_accel(1010, 0.0, 0.0, GRAVITY_MS2)));
 
         assert!(dr.finalize().is_empty());
     }
 
     #[test]
     fn dr_constant_velocity_eastward() {
-        let mut dr = DeadReckoning::new(DrConfig {
+        let mut dr = DeadReckoning::new(DeadReckoningConfig {
             zupt_speed_threshold_mps: 0.0, // disable ZUPT
-            ..DrConfig::default()
+            ..DeadReckoningConfig::default()
         });
 
         // 10 m/s East
-        dr.push_fix(&make_fix(1000, 5.0, Some(10.0), Some(90.0)));
-        dr.push_fix(&make_fix(2000, 50.0, None, None));
-        dr.push_attitude(&make_grv(2000, 0.0, 0.0, 0.0, 1.0));
+        dr.push_gnss(&GnssFix::from(&make_fix(1000, 5.0, Some(10.0), Some(90.0))));
+        dr.push_gnss(&GnssFix::from(&make_fix(2000, 50.0, None, None)));
+        dr.push_attitude(&AttitudeSample::from(&make_grv(2000, 0.0, 0.0, 0.0, 1.0)));
 
         // 1 second of gravity-only (no linear accel), velocity should persist
         for i in 1..=100 {
-            dr.push_accel(&make_accel(2000 + i * 10, 0.0, 0.0, GRAVITY_MS2));
+            dr.push_imu(&ImuSample::from(&make_accel(
+                2000 + i * 10,
+                0.0,
+                0.0,
+                GRAVITY_MS2,
+            )));
         }
 
         let traj = dr.finalize();
         let last_dr = traj
             .iter()
             .rev()
-            .find(|p| p.source == DrSource::DeadReckoning)
+            .find(|p| p.source == PointSource::DeadReckoning)
             .unwrap();
 
         // ~10m east in 1 second
@@ -779,22 +935,30 @@ mod tests {
 
     #[test]
     fn dr_zupt_prevents_drift() {
-        let config = DrConfig {
+        let config = DeadReckoningConfig {
             zupt_speed_threshold_mps: 0.5,
-            ..DrConfig::default()
+            ..DeadReckoningConfig::default()
         };
         let mut dr = DeadReckoning::new(config);
 
-        dr.push_fix(&make_fix(1000, 5.0, Some(0.0), None));
-        dr.push_fix(&make_fix(2000, 50.0, None, None));
-        dr.push_attitude(&make_grv(2000, 0.0, 0.0, 0.0, 1.0));
+        dr.push_gnss(&GnssFix::from(&make_fix(1000, 5.0, Some(0.0), None)));
+        dr.push_gnss(&GnssFix::from(&make_fix(2000, 50.0, None, None)));
+        dr.push_attitude(&AttitudeSample::from(&make_grv(2000, 0.0, 0.0, 0.0, 1.0)));
 
         for i in 1..=200 {
-            dr.push_accel(&make_accel(2000 + i * 10, 0.0, 0.0, GRAVITY_MS2));
+            dr.push_imu(&ImuSample::from(&make_accel(
+                2000 + i * 10,
+                0.0,
+                0.0,
+                GRAVITY_MS2,
+            )));
         }
 
         let traj = dr.finalize();
-        for p in traj.iter().filter(|p| p.source == DrSource::DeadReckoning) {
+        for p in traj
+            .iter()
+            .filter(|p| p.source == PointSource::DeadReckoning)
+        {
             assert!(approx_eq(p.latitude_deg, 36.0, 1e-5));
             assert!(approx_eq(p.longitude_deg, 140.0, 1e-5));
         }
@@ -802,34 +966,44 @@ mod tests {
 
     #[test]
     fn dr_large_gap_resets_velocity() {
-        let config = DrConfig {
+        let config = DeadReckoningConfig {
             zupt_speed_threshold_mps: 0.0,
             max_dt_s: 0.5,
-            ..DrConfig::default()
+            ..DeadReckoningConfig::default()
         };
         let mut dr = DeadReckoning::new(config);
 
-        dr.push_fix(&make_fix(1000, 5.0, Some(10.0), Some(90.0))); // 10 m/s East
-        dr.push_fix(&make_fix(2000, 50.0, None, None));
-        dr.push_attitude(&make_grv(2000, 0.0, 0.0, 0.0, 1.0));
+        dr.push_gnss(&GnssFix::from(&make_fix(1000, 5.0, Some(10.0), Some(90.0)))); // 10 m/s East
+        dr.push_gnss(&GnssFix::from(&make_fix(2000, 50.0, None, None)));
+        dr.push_attitude(&AttitudeSample::from(&make_grv(2000, 0.0, 0.0, 0.0, 1.0)));
 
         // Moving east
         for i in 1..=10 {
-            dr.push_accel(&make_accel(2000 + i * 10, 0.0, 0.0, GRAVITY_MS2));
+            dr.push_imu(&ImuSample::from(&make_accel(
+                2000 + i * 10,
+                0.0,
+                0.0,
+                GRAVITY_MS2,
+            )));
         }
 
         // 2-second gap → velocity reset (no point emitted for this)
-        dr.push_accel(&make_accel(4100, 0.0, 0.0, GRAVITY_MS2));
+        dr.push_imu(&ImuSample::from(&make_accel(4100, 0.0, 0.0, GRAVITY_MS2)));
 
         // After reset: stationary
         for i in 1..=10 {
-            dr.push_accel(&make_accel(4100 + i * 10, 0.0, 0.0, GRAVITY_MS2));
+            dr.push_imu(&ImuSample::from(&make_accel(
+                4100 + i * 10,
+                0.0,
+                0.0,
+                GRAVITY_MS2,
+            )));
         }
 
         let traj = dr.finalize();
         let after: Vec<_> = traj
             .iter()
-            .filter(|p| p.source == DrSource::DeadReckoning && p.time_ms > 4100)
+            .filter(|p| p.source == PointSource::DeadReckoning && p.time_ms > 4100)
             .collect();
 
         // Post-gap points should be nearly stationary relative to each other
@@ -845,15 +1019,15 @@ mod tests {
 
     #[test]
     fn dr_push_dispatches() {
-        let mut dr = DeadReckoning::new(DrConfig::default());
+        let mut dr = DeadReckoning::new(DeadReckoningConfig::default());
 
-        dr.push(&Record::Fix(make_fix(1000, 5.0, Some(0.0), None)));
-        dr.push(&Record::Fix(make_fix(2000, 50.0, None, None)));
-        dr.push(&Record::GameRotationVector(make_grv(
+        dr.push_record(&Record::Fix(make_fix(1000, 5.0, Some(0.0), None)));
+        dr.push_record(&Record::Fix(make_fix(2000, 50.0, None, None)));
+        dr.push_record(&Record::GameRotationVector(make_grv(
             2000, 0.0, 0.0, 0.0, 1.0,
         )));
-        dr.push(&Record::UncalAccel(make_accel(2010, 0.0, 0.0, GRAVITY_MS2)));
-        dr.push(&Record::Skipped); // ignored
+        dr.push_record(&Record::UncalAccel(make_accel(2010, 0.0, 0.0, GRAVITY_MS2)));
+        dr.push_record(&Record::Skipped); // ignored
 
         let traj = dr.finalize();
         assert_eq!(traj.len(), 2); // 1 GNSS + 1 DR
@@ -862,70 +1036,70 @@ mod tests {
     // ── Streaming output API ──
 
     #[test]
-    fn push_fix_returns_gnss_point() {
-        let mut dr = DeadReckoning::new(DrConfig::default());
+    fn push_gnss_returns_gnss_point() {
+        let mut dr = DeadReckoning::new(DeadReckoningConfig::default());
         let fix = make_fix(1000, 5.0, Some(0.0), None);
-        let result = dr.push_fix(&fix);
+        let result = dr.push_gnss(&GnssFix::from(&fix));
         assert!(result.is_some());
         let pt = result.unwrap();
-        assert_eq!(pt.source, DrSource::Gnss);
+        assert_eq!(pt.source, PointSource::Gnss);
         assert_eq!(pt.time_ms, 1000);
         assert!(approx_eq(pt.latitude_deg, 36.0, 1e-10));
     }
 
     #[test]
-    fn push_fix_degraded_returns_none() {
-        let mut dr = DeadReckoning::new(DrConfig::default());
+    fn push_gnss_degraded_returns_none() {
+        let mut dr = DeadReckoning::new(DeadReckoningConfig::default());
         // Good fix first (anchor)
-        dr.push_fix(&make_fix(1000, 5.0, Some(0.0), None));
+        dr.push_gnss(&GnssFix::from(&make_fix(1000, 5.0, Some(0.0), None)));
         // Degraded fix starts DR but returns no point
-        let result = dr.push_fix(&make_fix(2000, 50.0, None, None));
+        let result = dr.push_gnss(&GnssFix::from(&make_fix(2000, 50.0, None, None)));
         assert!(result.is_none());
     }
 
     #[test]
-    fn push_accel_returns_dr_point() {
-        let mut dr = DeadReckoning::new(DrConfig::default());
-        dr.push_fix(&make_fix(1000, 5.0, Some(0.0), None));
-        dr.push_fix(&make_fix(2000, 50.0, None, None));
-        dr.push_attitude(&make_grv(2000, 0.0, 0.0, 0.0, 1.0));
-        let result = dr.push_accel(&make_accel(2010, 0.0, 0.0, GRAVITY_MS2));
+    fn push_imu_returns_dr_point() {
+        let mut dr = DeadReckoning::new(DeadReckoningConfig::default());
+        dr.push_gnss(&GnssFix::from(&make_fix(1000, 5.0, Some(0.0), None)));
+        dr.push_gnss(&GnssFix::from(&make_fix(2000, 50.0, None, None)));
+        dr.push_attitude(&AttitudeSample::from(&make_grv(2000, 0.0, 0.0, 0.0, 1.0)));
+        let result = dr.push_imu(&ImuSample::from(&make_accel(2010, 0.0, 0.0, GRAVITY_MS2)));
         assert!(result.is_some());
-        assert_eq!(result.unwrap().source, DrSource::DeadReckoning);
+        assert_eq!(result.unwrap().source, PointSource::DeadReckoning);
     }
 
     #[test]
-    fn push_accel_no_state_returns_none() {
-        let mut dr = DeadReckoning::new(DrConfig::default());
+    fn push_imu_no_state_returns_none() {
+        let mut dr = DeadReckoning::new(DeadReckoningConfig::default());
         // No fix at all — accel should return None
-        dr.push_attitude(&make_grv(1000, 0.0, 0.0, 0.0, 1.0));
+        dr.push_attitude(&AttitudeSample::from(&make_grv(1000, 0.0, 0.0, 0.0, 1.0)));
         assert!(
-            dr.push_accel(&make_accel(1010, 0.0, 0.0, GRAVITY_MS2))
+            dr.push_imu(&ImuSample::from(&make_accel(1010, 0.0, 0.0, GRAVITY_MS2)))
                 .is_none()
         );
     }
 
     #[test]
-    fn push_returns_point_for_fix() {
-        let mut dr = DeadReckoning::new(DrConfig::default());
-        let result = dr.push(&Record::Fix(make_fix(1000, 5.0, Some(0.0), None)));
+    fn push_record_returns_point_for_fix() {
+        let mut dr = DeadReckoning::new(DeadReckoningConfig::default());
+        let result = dr.push_record(&Record::Fix(make_fix(1000, 5.0, Some(0.0), None)));
         assert!(result.is_some());
-        assert_eq!(result.unwrap().source, DrSource::Gnss);
+        assert_eq!(result.unwrap().source, PointSource::Gnss);
     }
 
     #[test]
-    fn push_returns_none_for_attitude() {
-        let mut dr = DeadReckoning::new(DrConfig::default());
-        let result = dr.push(&Record::GameRotationVector(make_grv(
+    fn push_record_returns_none_for_attitude() {
+        let mut dr = DeadReckoning::new(DeadReckoningConfig::default());
+        let result = dr.push_record(&Record::GameRotationVector(make_grv(
             1000, 0.0, 0.0, 0.0, 1.0,
         )));
         assert!(result.is_none());
     }
 
     #[test]
-    fn push_returns_none_for_skipped() {
-        let mut dr = DeadReckoning::new(DrConfig::default());
-        assert!(dr.push(&Record::Skipped).is_none());
+    fn push_record_returns_none_for_skipped() {
+        let mut dr = DeadReckoning::new(DeadReckoningConfig::default());
+        assert!(dr.push_record(&Record::Skipped).is_none());
     }
 
     #[test]
@@ -940,14 +1114,14 @@ mod tests {
         ];
 
         // Manual push + finalize
-        let mut dr1 = DeadReckoning::new(DrConfig::default());
+        let mut dr1 = DeadReckoning::new(DeadReckoningConfig::default());
         for r in &records {
-            dr1.push(r);
+            dr1.push_record(r);
         }
         let traj1 = dr1.finalize();
 
         // process_all
-        let dr2 = DeadReckoning::new(DrConfig::default());
+        let dr2 = DeadReckoning::new(DeadReckoningConfig::default());
         let traj2 = dr2.process_all(records);
 
         assert_eq!(traj1.len(), traj2.len());
@@ -958,15 +1132,15 @@ mod tests {
     }
 
     #[test]
-    fn push_fix_still_accumulates() {
-        let mut dr = DeadReckoning::new(DrConfig::default());
-        let returned = dr.push_fix(&make_fix(1000, 5.0, Some(0.0), None));
+    fn push_gnss_still_accumulates() {
+        let mut dr = DeadReckoning::new(DeadReckoningConfig::default());
+        let returned = dr.push_gnss(&GnssFix::from(&make_fix(1000, 5.0, Some(0.0), None)));
         assert!(returned.is_some());
         // finalize should still contain the same point (backward compat)
         let traj = dr.finalize();
         assert_eq!(traj.len(), 1);
         assert_eq!(traj[0].time_ms, 1000);
-        assert_eq!(traj[0].source, DrSource::Gnss);
+        assert_eq!(traj[0].source, PointSource::Gnss);
     }
 
     // ── Smoothing tests ──
@@ -975,7 +1149,7 @@ mod tests {
     fn make_smoothing_trajectory(
         dr_offsets_m: &[(f64, f64)], // (east_m, north_m) relative to start GNSS
         end_gnss_offset_m: (f64, f64),
-    ) -> Vec<DrPoint> {
+    ) -> Vec<TrajectoryPoint> {
         let base_lat = 36.0;
         let base_lon = 140.0;
         let mpdl = meters_per_deg_lon(base_lat);
@@ -983,30 +1157,30 @@ mod tests {
 
         let mut traj = Vec::with_capacity(n + 2);
         // Start GNSS at t=0
-        traj.push(DrPoint {
+        traj.push(TrajectoryPoint {
             time_ms: 0,
             latitude_deg: base_lat,
             longitude_deg: base_lon,
             altitude_m: 100.0,
-            source: DrSource::Gnss,
+            source: PointSource::Gnss,
         });
         // DR points at t=1000, 2000, ...
         for (i, &(east, north)) in dr_offsets_m.iter().enumerate() {
-            traj.push(DrPoint {
+            traj.push(TrajectoryPoint {
                 time_ms: (i as i64 + 1) * 1000,
                 latitude_deg: base_lat + north / METERS_PER_DEG_LAT,
                 longitude_deg: base_lon + east / mpdl,
                 altitude_m: 100.0 + i as f64,
-                source: DrSource::DeadReckoning,
+                source: PointSource::DeadReckoning,
             });
         }
         // End GNSS at t=(n+1)*1000
-        traj.push(DrPoint {
+        traj.push(TrajectoryPoint {
             time_ms: (n as i64 + 1) * 1000,
             latitude_deg: base_lat + end_gnss_offset_m.1 / METERS_PER_DEG_LAT,
             longitude_deg: base_lon + end_gnss_offset_m.0 / mpdl,
             altitude_m: 110.0,
-            source: DrSource::Gnss,
+            source: PointSource::Gnss,
         });
         traj
     }
@@ -1025,7 +1199,7 @@ mod tests {
             ],
             (100.0, 0.0),
         );
-        let smoothed = smooth_trajectory(&traj, DrSmoothing::Linear);
+        let smoothed = smooth_trajectory(&traj, SmoothingMethod::Linear);
 
         assert_eq!(smoothed.len(), traj.len());
         // DR points should be on a line from (0,0) to (100,0) in ENU
@@ -1060,7 +1234,7 @@ mod tests {
             ],
             (100.0, 0.0),
         );
-        let smoothed = smooth_trajectory(&traj, DrSmoothing::EndpointConstrained);
+        let smoothed = smooth_trajectory(&traj, SmoothingMethod::EndpointConstrained);
 
         assert_eq!(smoothed.len(), traj.len());
 
@@ -1094,7 +1268,7 @@ mod tests {
             &[(50.0, 0.0), (100.0, 0.0)], // DR at 50m and 100m east
             (200.0, 0.0),                 // end GNSS at 200m east
         );
-        let smoothed = smooth_trajectory(&traj, DrSmoothing::EndpointConstrained);
+        let smoothed = smooth_trajectory(&traj, SmoothingMethod::EndpointConstrained);
 
         let mpdl = meters_per_deg_lon(36.0);
         // last_dr is at 100m east; end_gnss is at 200m east → error = 100m east
@@ -1119,7 +1293,10 @@ mod tests {
     fn smooth_preserves_gnss() {
         let traj = make_smoothing_trajectory(&[(50.0, 50.0)], (100.0, 0.0));
 
-        for method in [DrSmoothing::Linear, DrSmoothing::EndpointConstrained] {
+        for method in [
+            SmoothingMethod::Linear,
+            SmoothingMethod::EndpointConstrained,
+        ] {
             let smoothed = smooth_trajectory(&traj, method);
             // Start GNSS
             assert_eq!(smoothed[0].latitude_deg, traj[0].latitude_deg);
@@ -1136,22 +1313,25 @@ mod tests {
         let base_lat = 36.0;
         let base_lon = 140.0;
         let traj = vec![
-            DrPoint {
+            TrajectoryPoint {
                 time_ms: 0,
                 latitude_deg: base_lat,
                 longitude_deg: base_lon,
                 altitude_m: 100.0,
-                source: DrSource::Gnss,
+                source: PointSource::Gnss,
             },
-            DrPoint {
+            TrajectoryPoint {
                 time_ms: 1000,
                 latitude_deg: base_lat + 0.001,
                 longitude_deg: base_lon,
                 altitude_m: 100.0,
-                source: DrSource::DeadReckoning,
+                source: PointSource::DeadReckoning,
             },
         ];
-        for method in [DrSmoothing::Linear, DrSmoothing::EndpointConstrained] {
+        for method in [
+            SmoothingMethod::Linear,
+            SmoothingMethod::EndpointConstrained,
+        ] {
             let smoothed = smooth_trajectory(&traj, method);
             assert_eq!(smoothed[1].latitude_deg, traj[1].latitude_deg);
             assert_eq!(smoothed[1].longitude_deg, traj[1].longitude_deg);
@@ -1164,44 +1344,44 @@ mod tests {
         let base_lon = 140.0;
         let mpdl = meters_per_deg_lon(base_lat);
         let traj = vec![
-            DrPoint {
+            TrajectoryPoint {
                 time_ms: 0,
                 latitude_deg: base_lat,
                 longitude_deg: base_lon,
                 altitude_m: 100.0,
-                source: DrSource::Gnss,
+                source: PointSource::Gnss,
             },
-            DrPoint {
+            TrajectoryPoint {
                 time_ms: 1000,
                 latitude_deg: base_lat + 50.0 / METERS_PER_DEG_LAT,
                 longitude_deg: base_lon,
                 altitude_m: 100.0,
-                source: DrSource::DeadReckoning,
+                source: PointSource::DeadReckoning,
             },
-            DrPoint {
+            TrajectoryPoint {
                 time_ms: 2000,
                 latitude_deg: base_lat,
                 longitude_deg: base_lon + 100.0 / mpdl,
                 altitude_m: 100.0,
-                source: DrSource::Gnss,
+                source: PointSource::Gnss,
             },
-            DrPoint {
+            TrajectoryPoint {
                 time_ms: 3000,
                 latitude_deg: base_lat - 50.0 / METERS_PER_DEG_LAT,
                 longitude_deg: base_lon + 100.0 / mpdl,
                 altitude_m: 100.0,
-                source: DrSource::DeadReckoning,
+                source: PointSource::DeadReckoning,
             },
-            DrPoint {
+            TrajectoryPoint {
                 time_ms: 4000,
                 latitude_deg: base_lat,
                 longitude_deg: base_lon + 200.0 / mpdl,
                 altitude_m: 100.0,
-                source: DrSource::Gnss,
+                source: PointSource::Gnss,
             },
         ];
 
-        let smoothed = smooth_trajectory(&traj, DrSmoothing::Linear);
+        let smoothed = smooth_trajectory(&traj, SmoothingMethod::Linear);
         // Segment 1: DR[1] should be on line from GNSS[0] to GNSS[2]
         let p1_east = (smoothed[1].longitude_deg - base_lon) * mpdl;
         assert!(
@@ -1220,7 +1400,10 @@ mod tests {
     fn smooth_altitude_unchanged() {
         let traj =
             make_smoothing_trajectory(&[(0.0, 10.0), (0.0, 20.0), (0.0, 30.0)], (100.0, 0.0));
-        for method in [DrSmoothing::Linear, DrSmoothing::EndpointConstrained] {
+        for method in [
+            SmoothingMethod::Linear,
+            SmoothingMethod::EndpointConstrained,
+        ] {
             let smoothed = smooth_trajectory(&traj, method);
             for i in 1..=3 {
                 assert_eq!(
@@ -1233,9 +1416,9 @@ mod tests {
 
     #[test]
     fn smooth_empty() {
-        let empty: Vec<DrPoint> = vec![];
-        assert!(smooth_trajectory(&empty, DrSmoothing::Linear).is_empty());
-        assert!(smooth_trajectory(&empty, DrSmoothing::EndpointConstrained).is_empty());
+        let empty: Vec<TrajectoryPoint> = vec![];
+        assert!(smooth_trajectory(&empty, SmoothingMethod::Linear).is_empty());
+        assert!(smooth_trajectory(&empty, SmoothingMethod::EndpointConstrained).is_empty());
     }
 
     // ── SVG visualization helpers ──
@@ -1280,7 +1463,7 @@ mod tests {
 
     struct NamedTrajectory<'a> {
         label: &'a str,
-        points: &'a [DrPoint],
+        points: &'a [TrajectoryPoint],
         color: &'a str,
         dash: Option<&'a str>,
     }
@@ -1304,7 +1487,7 @@ mod tests {
         let mut max_lat = f64::MIN;
         // Always include GNSS points from the first trajectory
         if let Some(t) = trajectories.first() {
-            for p in t.points.iter().filter(|p| p.source == DrSource::Gnss) {
+            for p in t.points.iter().filter(|p| p.source == PointSource::Gnss) {
                 min_lon = min_lon.min(p.longitude_deg);
                 max_lon = max_lon.max(p.longitude_deg);
                 min_lat = min_lat.min(p.latitude_deg);
@@ -1358,12 +1541,12 @@ mod tests {
         }
 
         // Collect GNSS points from first trajectory for shared markers
-        let gnss_points: Vec<&DrPoint> = trajectories
+        let gnss_points: Vec<&TrajectoryPoint> = trajectories
             .first()
             .map(|t| {
                 t.points
                     .iter()
-                    .filter(|p| p.source == DrSource::Gnss)
+                    .filter(|p| p.source == PointSource::Gnss)
                     .collect()
             })
             .unwrap_or_default();
@@ -1388,14 +1571,14 @@ mod tests {
             let dr_total = t
                 .points
                 .iter()
-                .filter(|p| p.source == DrSource::DeadReckoning)
+                .filter(|p| p.source == PointSource::DeadReckoning)
                 .count();
             let step = (dr_total / max_dr_vis).max(1);
             let mut d = String::new();
             let mut dr_idx = 0usize;
             let mut first = true;
             for p in t.points {
-                if p.source != DrSource::DeadReckoning {
+                if p.source != PointSource::DeadReckoning {
                     continue;
                 }
                 if !dr_idx.is_multiple_of(step) {
@@ -1467,9 +1650,9 @@ mod tests {
     // Run with: cargo test -p trajix dr_viz -- --ignored
 
     /// Helper: render comparison SVG for a trajectory and save it.
-    fn save_comparison(trajectory: &[DrPoint], name: &str, title: &str, desc: &str) {
-        let linear = smooth_trajectory(trajectory, DrSmoothing::Linear);
-        let ec = smooth_trajectory(trajectory, DrSmoothing::EndpointConstrained);
+    fn save_comparison(trajectory: &[TrajectoryPoint], name: &str, title: &str, desc: &str) {
+        let linear = smooth_trajectory(trajectory, SmoothingMethod::Linear);
+        let ec = smooth_trajectory(trajectory, SmoothingMethod::EndpointConstrained);
         let svg = render_comparison_svg(
             &[
                 NamedTrajectory {
@@ -1502,10 +1685,13 @@ mod tests {
     fn dr_viz_urban_canyon() {
         let traj = build_urban_canyon_trajectory();
 
-        let gnss_count = traj.iter().filter(|p| p.source == DrSource::Gnss).count();
+        let gnss_count = traj
+            .iter()
+            .filter(|p| p.source == PointSource::Gnss)
+            .count();
         let dr_count = traj
             .iter()
-            .filter(|p| p.source == DrSource::DeadReckoning)
+            .filter(|p| p.source == PointSource::DeadReckoning)
             .count();
         assert!(gnss_count >= 20, "expected >=20 GNSS, got {gnss_count}");
         assert!(dr_count >= 40, "expected >=40 DR, got {dr_count}");
@@ -1539,7 +1725,7 @@ mod tests {
 
         let dr_pts: Vec<_> = traj
             .iter()
-            .filter(|p| p.source == DrSource::DeadReckoning)
+            .filter(|p| p.source == PointSource::DeadReckoning)
             .collect();
         assert!(
             dr_pts.len() > 100,
@@ -1574,7 +1760,7 @@ mod tests {
 
         let dr_pts: Vec<_> = traj
             .iter()
-            .filter(|p| p.source == DrSource::DeadReckoning)
+            .filter(|p| p.source == PointSource::DeadReckoning)
             .collect();
         assert!(
             dr_pts.len() > 500,
@@ -1602,7 +1788,10 @@ mod tests {
 
         let base_lat = 35.6812;
         let base_lon = 139.7671;
-        for p in traj.iter().filter(|p| p.source == DrSource::DeadReckoning) {
+        for p in traj
+            .iter()
+            .filter(|p| p.source == PointSource::DeadReckoning)
+        {
             let dlat = (p.latitude_deg - base_lat) * METERS_PER_DEG_LAT;
             let dlon = (p.longitude_deg - base_lon) * meters_per_deg_lon(base_lat);
             let dist = (dlat * dlat + dlon * dlon).sqrt();
@@ -1628,7 +1817,7 @@ mod tests {
 
         let dr_pts: Vec<_> = traj
             .iter()
-            .filter(|p| p.source == DrSource::DeadReckoning)
+            .filter(|p| p.source == PointSource::DeadReckoning)
             .collect();
         let dr_start = 1000_i64;
         for p in &dr_pts {
@@ -1665,7 +1854,7 @@ mod tests {
 
         let dr_pts: Vec<_> = traj
             .iter()
-            .filter(|p| p.source == DrSource::DeadReckoning)
+            .filter(|p| p.source == PointSource::DeadReckoning)
             .collect();
         assert!(
             dr_pts.len() > 500,
@@ -1712,10 +1901,10 @@ mod tests {
     // Run with: cargo test -p trajix dr_viz_compare -- --ignored
 
     /// Build an urban-canyon trajectory (reusable for comparison).
-    fn build_urban_canyon_trajectory() -> Vec<DrPoint> {
-        let mut dr = DeadReckoning::new(DrConfig {
+    fn build_urban_canyon_trajectory() -> Vec<TrajectoryPoint> {
+        let mut dr = DeadReckoning::new(DeadReckoningConfig {
             zupt_speed_threshold_mps: 0.0,
-            ..DrConfig::default()
+            ..DeadReckoningConfig::default()
         });
 
         let base_lat = 35.6812;
@@ -1727,21 +1916,33 @@ mod tests {
             let cycle_start_lat = base_lat + (cycle as f64 * 5.0 * speed) / METERS_PER_DEG_LAT;
             for i in 0..3 {
                 let lat = cycle_start_lat + (i as f64 * speed) / METERS_PER_DEG_LAT;
-                dr.push_fix(&make_fix_at(t, 3.0, Some(speed), Some(0.0), lat, base_lon));
+                dr.push_gnss(&GnssFix::from(&make_fix_at(
+                    t,
+                    3.0,
+                    Some(speed),
+                    Some(0.0),
+                    lat,
+                    base_lon,
+                )));
                 t += 1000;
             }
-            dr.push_fix(&make_fix_at(
+            dr.push_gnss(&GnssFix::from(&make_fix_at(
                 t,
                 100.0,
                 None,
                 None,
                 cycle_start_lat,
                 base_lon,
-            ));
+            )));
             t += 100;
-            dr.push_attitude(&make_grv(t, 0.0, 0.0, 0.0, 1.0));
+            dr.push_attitude(&AttitudeSample::from(&make_grv(t, 0.0, 0.0, 0.0, 1.0)));
             for i in 0..200 {
-                dr.push_accel(&make_accel(t + i * 10, 0.0, 0.2, GRAVITY_MS2));
+                dr.push_imu(&ImuSample::from(&make_accel(
+                    t + i * 10,
+                    0.0,
+                    0.2,
+                    GRAVITY_MS2,
+                )));
             }
             t += 2000;
         }
@@ -1749,10 +1950,10 @@ mod tests {
     }
 
     /// Build a highway-turn trajectory (reusable for comparison).
-    fn build_highway_turn_trajectory() -> Vec<DrPoint> {
-        let mut dr = DeadReckoning::new(DrConfig {
+    fn build_highway_turn_trajectory() -> Vec<TrajectoryPoint> {
+        let mut dr = DeadReckoning::new(DeadReckoningConfig {
             zupt_speed_threshold_mps: 0.0,
-            ..DrConfig::default()
+            ..DeadReckoningConfig::default()
         });
 
         let base_lat = 36.0;
@@ -1761,20 +1962,27 @@ mod tests {
 
         for i in 0..3 {
             let lat = base_lat + (i as f64 * speed) / METERS_PER_DEG_LAT;
-            dr.push_fix(&make_fix_at(
+            dr.push_gnss(&GnssFix::from(&make_fix_at(
                 i * 1000,
                 5.0,
                 Some(speed),
                 Some(0.0),
                 lat,
                 base_lon,
-            ));
+            )));
         }
-        dr.push_fix(&make_fix_at(3000, 80.0, None, None, base_lat, base_lon));
+        dr.push_gnss(&GnssFix::from(&make_fix_at(
+            3000, 80.0, None, None, base_lat, base_lon,
+        )));
 
-        dr.push_attitude(&make_grv(3000, 0.0, 0.0, 0.0, 1.0));
+        dr.push_attitude(&AttitudeSample::from(&make_grv(3000, 0.0, 0.0, 0.0, 1.0)));
         for i in 1..=500 {
-            dr.push_accel(&make_accel(3000 + i * 10, 0.0, 0.0, GRAVITY_MS2));
+            dr.push_imu(&ImuSample::from(&make_accel(
+                3000 + i * 10,
+                0.0,
+                0.0,
+                GRAVITY_MS2,
+            )));
         }
 
         let turn_angle = std::f64::consts::FRAC_PI_2;
@@ -1784,38 +1992,63 @@ mod tests {
             let frac = i as f64 / 300.0;
             let angle = frac * turn_angle;
             let half = angle / 2.0;
-            dr.push_attitude(&make_grv(8000 + i * 10, 0.0, 0.0, half.sin(), half.cos()));
-            dr.push_accel(&make_accel(8000 + i * 10, a_c, 0.0, GRAVITY_MS2));
+            dr.push_attitude(&AttitudeSample::from(&make_grv(
+                8000 + i * 10,
+                0.0,
+                0.0,
+                half.sin(),
+                half.cos(),
+            )));
+            dr.push_imu(&ImuSample::from(&make_accel(
+                8000 + i * 10,
+                a_c,
+                0.0,
+                GRAVITY_MS2,
+            )));
         }
 
         let s90 = std::f64::consts::FRAC_PI_4.sin();
         let c90 = std::f64::consts::FRAC_PI_4.cos();
-        dr.push_attitude(&make_grv(11000, 0.0, 0.0, s90, c90));
+        dr.push_attitude(&AttitudeSample::from(&make_grv(11000, 0.0, 0.0, s90, c90)));
         for i in 1..=500 {
-            dr.push_accel(&make_accel(11000 + i * 10, 0.0, 0.0, GRAVITY_MS2));
+            dr.push_imu(&ImuSample::from(&make_accel(
+                11000 + i * 10,
+                0.0,
+                0.0,
+                GRAVITY_MS2,
+            )));
         }
 
-        dr.push_fix(&make_fix_at(
+        dr.push_gnss(&GnssFix::from(&make_fix_at(
             16000,
             5.0,
             Some(speed),
             Some(90.0),
             base_lat + 0.002,
             base_lon + 0.002,
-        ));
+        )));
         dr.finalize()
     }
 
     /// Build a stationary-noise trajectory (reusable for comparison).
-    fn build_stationary_noise_trajectory() -> Vec<DrPoint> {
-        let mut dr = DeadReckoning::new(DrConfig::default());
+    fn build_stationary_noise_trajectory() -> Vec<TrajectoryPoint> {
+        let mut dr = DeadReckoning::new(DeadReckoningConfig::default());
 
         let base_lat = 35.6812;
         let base_lon = 139.7671;
 
-        dr.push_fix(&make_fix_at(0, 5.0, Some(0.0), None, base_lat, base_lon));
-        dr.push_fix(&make_fix_at(1000, 50.0, None, None, base_lat, base_lon));
-        dr.push_attitude(&make_grv(1000, 0.0, 0.0, 0.0, 1.0));
+        dr.push_gnss(&GnssFix::from(&make_fix_at(
+            0,
+            5.0,
+            Some(0.0),
+            None,
+            base_lat,
+            base_lon,
+        )));
+        dr.push_gnss(&GnssFix::from(&make_fix_at(
+            1000, 50.0, None, None, base_lat, base_lon,
+        )));
+        dr.push_attitude(&AttitudeSample::from(&make_grv(1000, 0.0, 0.0, 0.0, 1.0)));
 
         for i in 1..=3000 {
             let t = 1000 + i * 10;
@@ -1823,64 +2056,71 @@ mod tests {
             let nx = 0.05 * (phase * 1.7).sin() + 0.03 * (phase * 3.1).cos();
             let ny = 0.04 * (phase * 2.3).sin() + 0.02 * (phase * 4.7).cos();
             let nz = 0.02 * (phase * 0.9).sin();
-            dr.push_accel(&make_accel(t, nx, ny, GRAVITY_MS2 + nz));
+            dr.push_imu(&ImuSample::from(&make_accel(t, nx, ny, GRAVITY_MS2 + nz)));
         }
 
-        dr.push_fix(&make_fix_at(
+        dr.push_gnss(&GnssFix::from(&make_fix_at(
             31000,
             5.0,
             Some(0.0),
             None,
             base_lat,
             base_lon,
-        ));
+        )));
         dr.finalize()
     }
 
     /// Build a max-duration-cutoff trajectory (reusable for comparison).
-    fn build_max_duration_trajectory() -> Vec<DrPoint> {
-        let mut dr = DeadReckoning::new(DrConfig {
+    fn build_max_duration_trajectory() -> Vec<TrajectoryPoint> {
+        let mut dr = DeadReckoning::new(DeadReckoningConfig {
             zupt_speed_threshold_mps: 0.0,
             max_dr_duration_ms: 30_000,
-            ..DrConfig::default()
+            ..DeadReckoningConfig::default()
         });
 
         let base_lat = 36.0;
         let base_lon = 140.0;
 
-        dr.push_fix(&make_fix_at(
+        dr.push_gnss(&GnssFix::from(&make_fix_at(
             0,
             5.0,
             Some(5.0),
             Some(90.0),
             base_lat,
             base_lon,
-        ));
-        dr.push_fix(&make_fix_at(1000, 100.0, None, None, base_lat, base_lon));
-        dr.push_attitude(&make_grv(1000, 0.0, 0.0, 0.0, 1.0));
+        )));
+        dr.push_gnss(&GnssFix::from(&make_fix_at(
+            1000, 100.0, None, None, base_lat, base_lon,
+        )));
+        dr.push_attitude(&AttitudeSample::from(&make_grv(1000, 0.0, 0.0, 0.0, 1.0)));
 
         for i in 1..=6000 {
-            dr.push_accel(&make_accel(1000 + i * 10, 0.0, 0.0, GRAVITY_MS2));
+            dr.push_imu(&ImuSample::from(&make_accel(
+                1000 + i * 10,
+                0.0,
+                0.0,
+                GRAVITY_MS2,
+            )));
         }
 
         let exit_lon = base_lon + 0.005;
-        dr.push_fix(&make_fix_at(
+        dr.push_gnss(&GnssFix::from(&make_fix_at(
             62000,
             5.0,
             Some(5.0),
             Some(90.0),
             base_lat,
             exit_lon,
-        ));
+        )));
         dr.finalize()
     }
 
     /// Build a tunnel-traverse trajectory (reusable for comparison).
-    fn build_tunnel_trajectory() -> Vec<DrPoint> {
-        let mut dr = DeadReckoning::new(DrConfig {
+    fn build_tunnel_trajectory() -> Vec<TrajectoryPoint> {
+        let mut dr = DeadReckoning::new(DeadReckoningConfig {
             zupt_speed_threshold_mps: 0.0,
             max_dr_duration_ms: 120_000,
-            ..DrConfig::default()
+            ..DeadReckoningConfig::default()
         });
 
         let base_lat = 36.0;
@@ -1890,42 +2130,49 @@ mod tests {
 
         for i in 0..5 {
             let lon = base_lon + (i as f64 * speed) / mpdl;
-            dr.push_fix(&make_fix_at(
+            dr.push_gnss(&GnssFix::from(&make_fix_at(
                 i * 1000,
                 5.0,
                 Some(speed),
                 Some(90.0),
                 base_lat,
                 lon,
-            ));
+            )));
         }
 
-        dr.push_fix(&make_fix_at(5000, 200.0, None, None, base_lat, base_lon));
-        dr.push_attitude(&make_grv(5000, 0.0, 0.0, 0.0, 1.0));
+        dr.push_gnss(&GnssFix::from(&make_fix_at(
+            5000, 200.0, None, None, base_lat, base_lon,
+        )));
+        dr.push_attitude(&AttitudeSample::from(&make_grv(5000, 0.0, 0.0, 0.0, 1.0)));
         for i in 1..=6000 {
-            dr.push_accel(&make_accel(5000 + i * 10, 0.0, 0.0, GRAVITY_MS2));
+            dr.push_imu(&ImuSample::from(&make_accel(
+                5000 + i * 10,
+                0.0,
+                0.0,
+                GRAVITY_MS2,
+            )));
         }
 
         let exit_lon = base_lon + (65.0 * speed) / mpdl;
         for i in 0..5 {
             let lon = exit_lon + (i as f64 * speed) / mpdl;
-            dr.push_fix(&make_fix_at(
+            dr.push_gnss(&GnssFix::from(&make_fix_at(
                 65000 + i * 1000,
                 5.0,
                 Some(speed),
                 Some(90.0),
                 base_lat,
                 lon,
-            ));
+            )));
         }
         dr.finalize()
     }
 
     /// Build an S-curve trajectory (reusable for comparison).
-    fn build_s_curve_trajectory() -> Vec<DrPoint> {
-        let mut dr = DeadReckoning::new(DrConfig {
+    fn build_s_curve_trajectory() -> Vec<TrajectoryPoint> {
+        let mut dr = DeadReckoning::new(DeadReckoningConfig {
             zupt_speed_threshold_mps: 0.0,
-            ..DrConfig::default()
+            ..DeadReckoningConfig::default()
         });
 
         let base_lat = 36.0;
@@ -1934,22 +2181,29 @@ mod tests {
 
         for i in 0..3 {
             let lat = base_lat + (i as f64 * speed) / METERS_PER_DEG_LAT;
-            dr.push_fix(&make_fix_at(
+            dr.push_gnss(&GnssFix::from(&make_fix_at(
                 i * 1000,
                 5.0,
                 Some(speed),
                 Some(0.0),
                 lat,
                 base_lon,
-            ));
+            )));
         }
 
-        dr.push_fix(&make_fix_at(3000, 80.0, None, None, base_lat, base_lon));
+        dr.push_gnss(&GnssFix::from(&make_fix_at(
+            3000, 80.0, None, None, base_lat, base_lon,
+        )));
 
         // Phase 1: 3s north
-        dr.push_attitude(&make_grv(3000, 0.0, 0.0, 0.0, 1.0));
+        dr.push_attitude(&AttitudeSample::from(&make_grv(3000, 0.0, 0.0, 0.0, 1.0)));
         for i in 1..=300 {
-            dr.push_accel(&make_accel(3000 + i * 10, 0.0, 0.0, GRAVITY_MS2));
+            dr.push_imu(&ImuSample::from(&make_accel(
+                3000 + i * 10,
+                0.0,
+                0.0,
+                GRAVITY_MS2,
+            )));
         }
 
         // Phase 2: north→east turn
@@ -1960,16 +2214,32 @@ mod tests {
             let frac = i as f64 / 300.0;
             let angle = frac * turn_angle;
             let half = angle / 2.0;
-            dr.push_attitude(&make_grv(6000 + i * 10, 0.0, 0.0, half.sin(), half.cos()));
-            dr.push_accel(&make_accel(6000 + i * 10, a_c, 0.0, GRAVITY_MS2));
+            dr.push_attitude(&AttitudeSample::from(&make_grv(
+                6000 + i * 10,
+                0.0,
+                0.0,
+                half.sin(),
+                half.cos(),
+            )));
+            dr.push_imu(&ImuSample::from(&make_accel(
+                6000 + i * 10,
+                a_c,
+                0.0,
+                GRAVITY_MS2,
+            )));
         }
 
         // Phase 3: 3s east
         let s90 = std::f64::consts::FRAC_PI_4.sin();
         let c90 = std::f64::consts::FRAC_PI_4.cos();
-        dr.push_attitude(&make_grv(9000, 0.0, 0.0, s90, c90));
+        dr.push_attitude(&AttitudeSample::from(&make_grv(9000, 0.0, 0.0, s90, c90)));
         for i in 1..=300 {
-            dr.push_accel(&make_accel(9000 + i * 10, 0.0, 0.0, GRAVITY_MS2));
+            dr.push_imu(&ImuSample::from(&make_accel(
+                9000 + i * 10,
+                0.0,
+                0.0,
+                GRAVITY_MS2,
+            )));
         }
 
         // Phase 4: east→south turn
@@ -1977,26 +2247,44 @@ mod tests {
             let frac = i as f64 / 300.0;
             let angle = turn_angle + frac * turn_angle;
             let half = angle / 2.0;
-            dr.push_attitude(&make_grv(12000 + i * 10, 0.0, 0.0, half.sin(), half.cos()));
-            dr.push_accel(&make_accel(12000 + i * 10, a_c, 0.0, GRAVITY_MS2));
+            dr.push_attitude(&AttitudeSample::from(&make_grv(
+                12000 + i * 10,
+                0.0,
+                0.0,
+                half.sin(),
+                half.cos(),
+            )));
+            dr.push_imu(&ImuSample::from(&make_accel(
+                12000 + i * 10,
+                a_c,
+                0.0,
+                GRAVITY_MS2,
+            )));
         }
 
         // Phase 5: 3s south
         let s180 = std::f64::consts::FRAC_PI_2.sin();
         let c180 = std::f64::consts::FRAC_PI_2.cos();
-        dr.push_attitude(&make_grv(15000, 0.0, 0.0, s180, c180));
+        dr.push_attitude(&AttitudeSample::from(&make_grv(
+            15000, 0.0, 0.0, s180, c180,
+        )));
         for i in 1..=300 {
-            dr.push_accel(&make_accel(15000 + i * 10, 0.0, 0.0, GRAVITY_MS2));
+            dr.push_imu(&ImuSample::from(&make_accel(
+                15000 + i * 10,
+                0.0,
+                0.0,
+                GRAVITY_MS2,
+            )));
         }
 
-        dr.push_fix(&make_fix_at(
+        dr.push_gnss(&GnssFix::from(&make_fix_at(
             18000,
             5.0,
             Some(speed),
             Some(180.0),
             base_lat,
             base_lon + 0.003,
-        ));
+        )));
         dr.finalize()
     }
 
@@ -2008,7 +2296,7 @@ mod tests {
     // Run with: cargo test -p trajix dr_viz_real -- --ignored
 
     /// Parse a real GNSS log file through the DR pipeline.
-    fn parse_real_log(filename: &str) -> Vec<DrPoint> {
+    fn parse_real_log(filename: &str) -> Vec<TrajectoryPoint> {
         let path = format!("{}/../../{}", env!("CARGO_MANIFEST_DIR"), filename);
         let file = std::fs::File::open(&path).unwrap_or_else(|e| {
             panic!("Could not open {path}: {e}. Real data file required for this test.");
@@ -2016,9 +2304,9 @@ mod tests {
         let reader = std::io::BufReader::new(file);
         let parser = crate::parser::streaming::StreamingParser::new(reader);
 
-        let mut dr = DeadReckoning::new(DrConfig::default());
+        let mut dr = DeadReckoning::new(DeadReckoningConfig::default());
         for record in parser.flatten() {
-            dr.push(&record);
+            dr.push_record(&record);
         }
         dr.finalize()
     }
@@ -2037,7 +2325,7 @@ mod tests {
     }
 
     /// Find and rank all DR segments in a trajectory.
-    fn find_real_segments(trajectory: &[DrPoint]) -> Vec<RealSegment> {
+    fn find_real_segments(trajectory: &[TrajectoryPoint]) -> Vec<RealSegment> {
         let segments = find_dr_segments(trajectory);
         segments
             .iter()
@@ -2077,10 +2365,14 @@ mod tests {
     }
 
     /// Extract a trajectory window around a segment (±context GNSS points).
-    fn extract_window(trajectory: &[DrPoint], seg: &RealSegment, context: usize) -> Vec<DrPoint> {
+    fn extract_window(
+        trajectory: &[TrajectoryPoint],
+        seg: &RealSegment,
+        context: usize,
+    ) -> Vec<TrajectoryPoint> {
         let mut before = Vec::new();
         for i in (0..seg.gnss_start).rev() {
-            if trajectory[i].source == DrSource::Gnss {
+            if trajectory[i].source == PointSource::Gnss {
                 before.push(i);
                 if before.len() >= context {
                     break;
@@ -2091,7 +2383,7 @@ mod tests {
 
         let mut after = Vec::new();
         for (i, pt) in trajectory.iter().enumerate().skip(seg.gnss_end + 1) {
-            if pt.source == DrSource::Gnss {
+            if pt.source == PointSource::Gnss {
                 after.push(i);
                 if after.len() >= context {
                     break;
@@ -2106,16 +2398,16 @@ mod tests {
 
     /// Extract a trajectory window spanning multiple consecutive segments.
     fn extract_multi_segment_window(
-        trajectory: &[DrPoint],
+        trajectory: &[TrajectoryPoint],
         segments: &[&RealSegment],
         context: usize,
-    ) -> Vec<DrPoint> {
+    ) -> Vec<TrajectoryPoint> {
         let first = segments.first().unwrap();
         let last = segments.last().unwrap();
 
         let mut before = Vec::new();
         for i in (0..first.gnss_start).rev() {
-            if trajectory[i].source == DrSource::Gnss {
+            if trajectory[i].source == PointSource::Gnss {
                 before.push(i);
                 if before.len() >= context {
                     break;
@@ -2126,7 +2418,7 @@ mod tests {
 
         let mut after = Vec::new();
         for (i, pt) in trajectory.iter().enumerate().skip(last.gnss_end + 1) {
-            if pt.source == DrSource::Gnss {
+            if pt.source == PointSource::Gnss {
                 after.push(i);
                 if after.len() >= context {
                     break;
@@ -2157,11 +2449,11 @@ mod tests {
 
             let gnss_count = trajectory
                 .iter()
-                .filter(|p| p.source == DrSource::Gnss)
+                .filter(|p| p.source == PointSource::Gnss)
                 .count();
             let dr_count = trajectory
                 .iter()
-                .filter(|p| p.source == DrSource::DeadReckoning)
+                .filter(|p| p.source == PointSource::DeadReckoning)
                 .count();
             eprintln!(
                 "  Total: {} points (GNSS={gnss_count}, DR={dr_count})",
@@ -2178,8 +2470,7 @@ mod tests {
             by_duration.sort_by(|a, b| b.duration_ms.cmp(&a.duration_ms));
 
             let mut by_error: Vec<&RealSegment> = segments.iter().collect();
-            by_error
-                .sort_by(|a, b| b.endpoint_error_m.partial_cmp(&a.endpoint_error_m).unwrap());
+            by_error.sort_by(|a, b| b.endpoint_error_m.partial_cmp(&a.endpoint_error_m).unwrap());
 
             let mut by_speed: Vec<&RealSegment> = segments.iter().collect();
             by_speed.sort_by(|a, b| b.avg_speed_mps.partial_cmp(&a.avg_speed_mps).unwrap());

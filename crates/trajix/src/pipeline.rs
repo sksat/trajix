@@ -21,7 +21,10 @@
 
 use serde::Serialize;
 
-use crate::dead_reckoning::{DeadReckoning, DrConfig, DrPoint, DrSmoothing, smooth_trajectory};
+use crate::dead_reckoning::{
+    AttitudeSample, DeadReckoning, DeadReckoningConfig, GnssFix, ImuSample, SmoothingMethod,
+    TrajectoryPoint, smooth_trajectory,
+};
 use crate::downsample::{DecimatedSample, StreamingDecimator};
 use crate::parser::header::HeaderInfo;
 use crate::parser::line::{Record, parse_line};
@@ -109,7 +112,7 @@ pub struct ProcessingResult {
     pub fix_qualities: Vec<FixQuality>,
     pub status_epochs: Vec<StatusEpoch>,
     pub fix_epochs: Vec<FixEpoch>,
-    pub dr_trajectory: Vec<DrPoint>,
+    pub dr_trajectory: Vec<TrajectoryPoint>,
     pub satellite_snapshots: Vec<SatelliteSnapshot>,
     pub sensor_time_series: SensorTimeSeries,
 }
@@ -160,11 +163,19 @@ impl Default for GnssProcessor {
 impl GnssProcessor {
     /// Create a new processor with default configuration.
     pub fn new() -> Self {
-        Self::with_config(DEFAULT_EPOCH_MS, SENSOR_DECIMATE_MS, DrConfig::default())
+        Self::with_config(
+            DEFAULT_EPOCH_MS,
+            SENSOR_DECIMATE_MS,
+            DeadReckoningConfig::default(),
+        )
     }
 
     /// Create a processor with custom configuration.
-    pub fn with_config(epoch_ms: i64, sensor_decimate_ms: i64, dr_config: DrConfig) -> Self {
+    pub fn with_config(
+        epoch_ms: i64,
+        sensor_decimate_ms: i64,
+        dr_config: DeadReckoningConfig,
+    ) -> Self {
         GnssProcessor {
             header: None,
             header_lines: Vec::new(),
@@ -225,7 +236,7 @@ impl GnssProcessor {
                         // Feed to aggregator
                         self.aggregator.push(Record::Fix(f.clone()));
                         // Feed to Dead Reckoning
-                        self.dead_reckoning.push_fix(&f);
+                        self.dead_reckoning.push_gnss(&GnssFix::from(&f));
 
                         let quality = self.fix_classifier.classify(&f);
                         self.fixes.push(f);
@@ -247,7 +258,7 @@ impl GnssProcessor {
                     Record::UncalAccel(s) => {
                         self.counts.uncal_accel += 1;
                         // Feed to Dead Reckoning (full resolution)
-                        self.dead_reckoning.push_accel(&s);
+                        self.dead_reckoning.push_imu(&ImuSample::from(&s));
                         // Decimate for chart display (100Hz → 10Hz)
                         let (x, y, z) = s.unbiased();
                         self.accel_decimator
@@ -279,7 +290,7 @@ impl GnssProcessor {
                     Record::GameRotationVector(g) => {
                         self.counts.game_rotation += 1;
                         // Feed to Dead Reckoning (full resolution)
-                        self.dead_reckoning.push_attitude(&g);
+                        self.dead_reckoning.push_attitude(&AttitudeSample::from(&g));
                         // Decimate for chart display
                         self.rotation_decimator.push(
                             g.utc_time_ms,
@@ -309,7 +320,8 @@ impl GnssProcessor {
         // Finalize streaming processors
         let (status_epochs, fix_epochs) = self.aggregator.finalize();
         let raw_trajectory = self.dead_reckoning.finalize();
-        let dr_trajectory = smooth_trajectory(&raw_trajectory, DrSmoothing::EndpointConstrained);
+        let dr_trajectory =
+            smooth_trajectory(&raw_trajectory, SmoothingMethod::EndpointConstrained);
 
         ProcessingResult {
             header: self.header,

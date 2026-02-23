@@ -12,7 +12,7 @@ export type {
   StatusEpochJs,
   ConstellationStatsJs,
   FixEpochJs,
-  DrPointJs,
+  TrajectoryPointJs,
   SensorTimeSeries,
   DecimatedSample,
   SensorXyz,

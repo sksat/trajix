@@ -53,9 +53,9 @@ pub use types::{CodeType, ConstellationType, FixProvider, RecordType};
 
 // Dead Reckoning
 pub use dead_reckoning::{
-    DeadReckoning, DrConfig, DrPoint, DrSmoothing, DrSource, smooth_trajectory,
+    AttitudeSample, DeadReckoning, DeadReckoningConfig, DeviceQuaternion, GnssFix, ImuSample,
+    IntegrationMethod, PointSource, SmoothingMethod, TrajectoryPoint, smooth_trajectory,
 };
-
 // Downsampling
 pub use downsample::{
     DecimatedSample, LttbValue, Sample, StreamingDecimator, decimate_by_time, lttb, lttb_indices,
@@ -77,8 +77,9 @@ pub use pipeline::{
 /// ```
 pub mod prelude {
     pub use crate::{
-        ConstellationType, DeadReckoning, DrConfig, DrPoint, DrSmoothing, DrSource, FilterRecords,
-        FixProvider, FixQuality, FixRecord, GnssProcessor, ParseError, ProcessingResult, Record,
-        RecordType, StatusRecord, StreamingParser, smooth_trajectory,
+        AttitudeSample, ConstellationType, DeadReckoning, DeadReckoningConfig, DeviceQuaternion,
+        FilterRecords, FixProvider, FixQuality, FixRecord, GnssFix, GnssProcessor, ImuSample,
+        IntegrationMethod, ParseError, PointSource, ProcessingResult, Record, RecordType,
+        SmoothingMethod, StatusRecord, StreamingParser, TrajectoryPoint, smooth_trajectory,
     };
 }

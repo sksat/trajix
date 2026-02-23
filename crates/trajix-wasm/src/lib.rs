@@ -2,7 +2,7 @@ use serde::Serialize;
 use tsify_next::Tsify;
 use wasm_bindgen::prelude::*;
 
-use trajix::dead_reckoning::DrSource;
+use trajix::dead_reckoning::PointSource;
 use trajix::downsample::DecimatedSample;
 use trajix::parser::header::HeaderInfo;
 use trajix::pipeline::{GnssProcessor, OrientationValue, RotationValue, SensorXyz};
@@ -161,14 +161,14 @@ impl GnssLogProcessor {
             dr_trajectory: result
                 .dr_trajectory
                 .into_iter()
-                .map(|p| DrPointJs {
+                .map(|p| TrajectoryPointJs {
                     time_ms: p.time_ms,
                     latitude_deg: p.latitude_deg,
                     longitude_deg: p.longitude_deg,
                     altitude_m: p.altitude_m,
                     source: match p.source {
-                        DrSource::Gnss => "gnss",
-                        DrSource::DeadReckoning => "dr",
+                        PointSource::Gnss => "gnss",
+                        PointSource::DeadReckoning => "dr",
                     },
                 })
                 .collect(),
@@ -218,7 +218,7 @@ struct ProcessingResult {
     fix_qualities: Vec<FixQuality>,
     status_epochs: Vec<StatusEpochJs>,
     fix_epochs: Vec<FixEpochJs>,
-    dr_trajectory: Vec<DrPointJs>,
+    dr_trajectory: Vec<TrajectoryPointJs>,
     satellite_snapshots: Vec<SatelliteSnapshot>,
     sensor_time_series: SensorTimeSeries,
 }
@@ -265,7 +265,7 @@ struct FixEpochJs {
 }
 
 #[derive(Serialize, Tsify)]
-struct DrPointJs {
+struct TrajectoryPointJs {
     time_ms: i64,
     latitude_deg: f64,
     longitude_deg: f64,
