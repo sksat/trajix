@@ -132,7 +132,7 @@ pub struct DeviceQuaternion {
 
 impl DeviceQuaternion {
     /// Convert to nalgebra `UnitQuaternion`, mapping Android (x,y,z,w) → nalgebra (w,x,y,z).
-    pub(crate) fn to_unit_quaternion(&self) -> UnitQuaternion<f64> {
+    pub(crate) fn to_unit_quaternion(self) -> UnitQuaternion<f64> {
         UnitQuaternion::new_normalize(Quaternion::new(self.w, self.x, self.y, self.z))
     }
 }
@@ -614,6 +614,59 @@ mod tests {
     /// Helper: create a UnitQuaternion from Android (x, y, z, w) convention.
     fn quat(x: f64, y: f64, z: f64, w: f64) -> UnitQuaternion<f64> {
         DeviceQuaternion { x, y, z, w }.to_unit_quaternion()
+    }
+
+    // ── DeviceQuaternion ──
+
+    #[test]
+    fn device_quaternion_to_unit_identity() {
+        // Android identity quaternion (x=0, y=0, z=0, w=1)
+        let dq = DeviceQuaternion {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+            w: 1.0,
+        };
+        let uq = dq.to_unit_quaternion();
+        // nalgebra identity: (w=1, i=0, j=0, k=0)
+        assert!(approx_eq(uq.as_ref().w, 1.0, 1e-10));
+        assert!(approx_eq(uq.as_ref().i, 0.0, 1e-10));
+        assert!(approx_eq(uq.as_ref().j, 0.0, 1e-10));
+        assert!(approx_eq(uq.as_ref().k, 0.0, 1e-10));
+    }
+
+    #[test]
+    fn device_quaternion_to_unit_maps_xyzw_correctly() {
+        // Verify Android (x,y,z,w) maps to nalgebra (w,i,j,k) = (w,x,y,z)
+        let dq = DeviceQuaternion {
+            x: 0.1,
+            y: 0.2,
+            z: 0.3,
+            w: 0.9,
+        };
+        let uq = dq.to_unit_quaternion();
+        let q = uq.quaternion();
+        // nalgebra stores as (w, i, j, k) where i=x, j=y, k=z
+        let norm = (0.1f64 * 0.1 + 0.2 * 0.2 + 0.3 * 0.3 + 0.9 * 0.9).sqrt();
+        assert!(approx_eq(q.w, 0.9 / norm, 1e-10));
+        assert!(approx_eq(q.i, 0.1 / norm, 1e-10));
+        assert!(approx_eq(q.j, 0.2 / norm, 1e-10));
+        assert!(approx_eq(q.k, 0.3 / norm, 1e-10));
+    }
+
+    #[test]
+    fn device_quaternion_to_unit_normalizes() {
+        // Non-unit quaternion should be normalized
+        let dq = DeviceQuaternion {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+            w: 2.0,
+        };
+        let uq = dq.to_unit_quaternion();
+        let q = uq.quaternion();
+        let norm = (q.w * q.w + q.i * q.i + q.j * q.j + q.k * q.k).sqrt();
+        assert!(approx_eq(norm, 1.0, 1e-10));
     }
 
     // ── Quaternion convention ──
