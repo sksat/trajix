@@ -4,6 +4,7 @@ import "cesium/Build/Cesium/Widgets/widgets.css";
 import type { ProcessingResult } from "../../types/gnss";
 import type { FixRecord } from "../../types/gnss";
 import { accuracyToColor } from "../../utils/color";
+import { capClockAdvance } from "../../utils/clockCap";
 import { createGsiTerrainProvider } from "../../utils/gsiTerrain";
 import { filterAltitudeSpikes, smoothAltitudes } from "../../utils/altitude";
 import {
@@ -116,6 +117,32 @@ export function CesiumMap({
     // Depth-test entities (polylines, points, etc.) against terrain so they
     // are hidden when behind mountains instead of rendering through them.
     viewer.scene.globe.depthTestAgainstTerrain = true;
+
+    // Cap clock advance to prevent time jumps during UI stalls
+    // (e.g. drawer open/close, tab switch)
+    {
+      let prevJulian = viewer.clock.currentTime.clone();
+      let lastWallMs = performance.now();
+      viewer.clock.onTick.addEventListener((c: Cesium.Clock) => {
+        const now = performance.now();
+        if (!c.shouldAnimate) {
+          Cesium.JulianDate.clone(c.currentTime, prevJulian);
+          lastWallMs = now;
+          return;
+        }
+        const simDelta = Cesium.JulianDate.secondsDifference(
+          c.currentTime,
+          prevJulian,
+        );
+        const wallDelta = now - lastWallMs;
+        const capped = capClockAdvance(simDelta, wallDelta, c.multiplier);
+        if (capped < simDelta) {
+          Cesium.JulianDate.addSeconds(prevJulian, capped, c.currentTime);
+        }
+        Cesium.JulianDate.clone(c.currentTime, prevJulian);
+        lastWallMs = now;
+      });
+    }
 
     viewerRef.current = viewer;
     // Expose viewer globally for debugging/demo recording
