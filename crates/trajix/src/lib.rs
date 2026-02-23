@@ -54,7 +54,8 @@ pub use types::{CodeType, ConstellationType, FixProvider, RecordType};
 // Dead Reckoning
 pub use dead_reckoning::{
     AttitudeSample, DeadReckoning, DeadReckoningConfig, DeviceQuaternion, GnssFix, ImuSample,
-    IntegrationMethod, PointSource, SmoothingMethod, TrajectoryPoint, smooth_trajectory,
+    IntegrationMethod, PointSource, SmoothingMethod, TimestampMs, TrajectoryPoint,
+    smooth_trajectory,
 };
 // Downsampling
 pub use downsample::{
@@ -80,6 +81,7 @@ pub mod prelude {
         AttitudeSample, ConstellationType, DeadReckoning, DeadReckoningConfig, DeviceQuaternion,
         FilterRecords, FixProvider, FixQuality, FixRecord, GnssFix, GnssProcessor, ImuSample,
         IntegrationMethod, ParseError, PointSource, ProcessingResult, Record, RecordType,
-        SmoothingMethod, StatusRecord, StreamingParser, TrajectoryPoint, smooth_trajectory,
+        SmoothingMethod, StatusRecord, StreamingParser, TimestampMs, TrajectoryPoint,
+        smooth_trajectory,
     };
 }

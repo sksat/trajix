@@ -162,7 +162,7 @@ impl GnssLogProcessor {
                 .dr_trajectory
                 .into_iter()
                 .map(|p| TrajectoryPointJs {
-                    time_ms: p.time_ms,
+                    time_ms: p.time_ms.as_i64(),
                     latitude_deg: p.latitude_deg,
                     longitude_deg: p.longitude_deg,
                     altitude_m: p.altitude_m,

@@ -27,6 +27,42 @@ const GRAVITY_MS2: f64 = 9.80665;
 const METERS_PER_DEG_LAT: f64 = 111_132.0;
 
 // ────────────────────────────────────────────
+// Timestamp newtype
+// ────────────────────────────────────────────
+
+/// Timestamp in wall-clock milliseconds (UTC epoch).
+///
+/// All inputs to [`DeadReckoning`] must use the same time base.
+/// For GNSS Logger data, both Fix (`unix_time_ms`) and sensor
+/// (`utc_time_ms`) records use wall-clock milliseconds since Unix epoch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(transparent)]
+pub struct TimestampMs(pub i64);
+
+impl TimestampMs {
+    /// Time delta in seconds (for numerical integration).
+    pub fn dt_seconds(self, earlier: Self) -> f64 {
+        (self.0 - earlier.0) as f64 / 1000.0
+    }
+
+    /// Time delta in milliseconds (for duration comparisons).
+    pub fn elapsed_ms(self, earlier: Self) -> i64 {
+        self.0 - earlier.0
+    }
+
+    /// Raw millisecond value.
+    pub fn as_i64(self) -> i64 {
+        self.0
+    }
+}
+
+impl std::fmt::Display for TimestampMs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}ms", self.0)
+    }
+}
+
+// ────────────────────────────────────────────
 // Output types
 // ────────────────────────────────────────────
 
@@ -42,7 +78,7 @@ pub enum PointSource {
 /// A single trajectory point (GNSS or dead-reckoned).
 #[derive(Debug, Clone)]
 pub struct TrajectoryPoint {
-    pub time_ms: i64,
+    pub time_ms: TimestampMs,
     pub latitude_deg: f64,
     pub longitude_deg: f64,
     pub altitude_m: f64,
@@ -70,7 +106,7 @@ pub enum SmoothingMethod {
 /// Parser-independent: construct directly or via `From<&FixRecord>`.
 #[derive(Debug, Clone)]
 pub struct GnssFix {
-    pub time_ms: i64,
+    pub time_ms: TimestampMs,
     pub latitude_deg: f64,
     pub longitude_deg: f64,
     pub altitude_m: f64,
@@ -87,7 +123,7 @@ pub struct GnssFix {
 /// Parser-independent: construct directly or via `From<&UncalibratedSensorRecord>`.
 #[derive(Debug, Clone)]
 pub struct ImuSample {
-    pub time_ms: i64,
+    pub time_ms: TimestampMs,
     /// Calibrated acceleration in device frame \[x, y, z\] (m/s²).
     pub accel: [f64; 3],
 }
@@ -96,7 +132,7 @@ impl ImuSample {
     /// Construct from uncalibrated raw acceleration and estimated bias.
     ///
     /// Computes `accel = raw - bias` for each axis.
-    pub fn from_uncalibrated(time_ms: i64, raw: [f64; 3], bias: [f64; 3]) -> Self {
+    pub fn from_uncalibrated(time_ms: TimestampMs, raw: [f64; 3], bias: [f64; 3]) -> Self {
         Self {
             time_ms,
             accel: [raw[0] - bias[0], raw[1] - bias[1], raw[2] - bias[2]],
@@ -113,7 +149,7 @@ impl ImuSample {
 /// Parser-independent: construct directly or via `From<&GameRotationVectorRecord>`.
 #[derive(Debug, Clone)]
 pub struct AttitudeSample {
-    pub time_ms: i64,
+    pub time_ms: TimestampMs,
     pub quaternion: DeviceQuaternion,
 }
 
@@ -191,7 +227,7 @@ impl Default for DeadReckoningConfig {
 impl From<&FixRecord> for GnssFix {
     fn from(f: &FixRecord) -> Self {
         Self {
-            time_ms: f.unix_time_ms,
+            time_ms: TimestampMs(f.unix_time_ms),
             latitude_deg: f.latitude_deg,
             longitude_deg: f.longitude_deg,
             altitude_m: f.altitude_m.unwrap_or(0.0),
@@ -205,7 +241,7 @@ impl From<&FixRecord> for GnssFix {
 impl From<&UncalibratedSensorRecord> for ImuSample {
     fn from(s: &UncalibratedSensorRecord) -> Self {
         Self {
-            time_ms: s.utc_time_ms,
+            time_ms: TimestampMs(s.utc_time_ms),
             accel: [s.x - s.bias_x, s.y - s.bias_y, s.z - s.bias_z],
         }
     }
@@ -214,7 +250,7 @@ impl From<&UncalibratedSensorRecord> for ImuSample {
 impl From<&GameRotationVectorRecord> for AttitudeSample {
     fn from(g: &GameRotationVectorRecord) -> Self {
         Self {
-            time_ms: g.utc_time_ms,
+            time_ms: TimestampMs(g.utc_time_ms),
             quaternion: DeviceQuaternion {
                 x: g.x,
                 y: g.y,
@@ -239,13 +275,13 @@ struct GnssAnchor {
 }
 
 struct DrState {
-    time_ms: i64,
+    time_ms: TimestampMs,
     pos_enu: Vector3<f64>,
     vel_enu: Vector3<f64>,
     anchor_lat_deg: f64,
     anchor_lon_deg: f64,
     anchor_alt_m: f64,
-    dr_start_ms: i64,
+    dr_start_ms: TimestampMs,
 }
 
 // ────────────────────────────────────────────
@@ -333,11 +369,11 @@ impl DeadReckoning {
         let state = self.state.as_mut()?;
 
         // Check max duration
-        if sample.time_ms - state.dr_start_ms > self.config.max_dr_duration_ms {
+        if sample.time_ms.elapsed_ms(state.dr_start_ms) > self.config.max_dr_duration_ms {
             return None;
         }
 
-        let dt_s = (sample.time_ms - state.time_ms) as f64 / 1000.0;
+        let dt_s = sample.time_ms.dt_seconds(state.time_ms);
 
         if dt_s < self.config.min_dt_s {
             return None;
@@ -538,8 +574,8 @@ pub fn smooth_trajectory(
     for seg in &segments {
         let start = &trajectory[seg.start_gnss];
         let end = &trajectory[seg.end_gnss];
-        let t_start = start.time_ms as f64;
-        let t_end = end.time_ms as f64;
+        let t_start = start.time_ms.as_i64() as f64;
+        let t_end = end.time_ms.as_i64() as f64;
         let dt = t_end - t_start;
         if dt <= 0.0 {
             continue;
@@ -553,7 +589,7 @@ pub fn smooth_trajectory(
         match method {
             SmoothingMethod::Linear => {
                 for pt in &mut result[seg.dr_start..=seg.dr_end] {
-                    let t = pt.time_ms as f64;
+                    let t = pt.time_ms.as_i64() as f64;
                     let alpha = (t - t_start) / dt;
                     let east = alpha * end_east;
                     let north = alpha * end_north;
@@ -576,7 +612,7 @@ pub fn smooth_trajectory(
                 let error_north = end_north - last_dr_north;
 
                 for i in seg.dr_start..=seg.dr_end {
-                    let t = result[i].time_ms as f64;
+                    let t = result[i].time_ms.as_i64() as f64;
                     let frac = (t - t_start) / dt;
                     // Quadratic weighting: correction ∝ t² (matches accel-bias error growth)
                     let alpha = frac * frac;
@@ -614,6 +650,50 @@ mod tests {
     /// Helper: create a UnitQuaternion from Android (x, y, z, w) convention.
     fn quat(x: f64, y: f64, z: f64, w: f64) -> UnitQuaternion<f64> {
         DeviceQuaternion { x, y, z, w }.to_unit_quaternion()
+    }
+
+    // ── TimestampMs ──
+
+    #[test]
+    fn timestamp_ms_dt_seconds() {
+        let t1 = TimestampMs(1000);
+        let t2 = TimestampMs(1100);
+        assert!(approx_eq(t2.dt_seconds(t1), 0.1, 1e-10));
+        assert!(approx_eq(
+            TimestampMs(2000).dt_seconds(TimestampMs(1000)),
+            1.0,
+            1e-10
+        ));
+        // Negative dt (backwards time)
+        assert!(approx_eq(t1.dt_seconds(t2), -0.1, 1e-10));
+    }
+
+    #[test]
+    fn timestamp_ms_elapsed_ms() {
+        let t1 = TimestampMs(1000);
+        let t2 = TimestampMs(5000);
+        assert_eq!(t2.elapsed_ms(t1), 4000);
+        assert_eq!(t1.elapsed_ms(t2), -4000);
+    }
+
+    #[test]
+    fn timestamp_ms_ordering() {
+        let t1 = TimestampMs(100);
+        let t2 = TimestampMs(200);
+        assert!(t1 < t2);
+        assert!(t2 > t1);
+        assert_eq!(TimestampMs(100), TimestampMs(100));
+    }
+
+    #[test]
+    fn timestamp_ms_display() {
+        assert_eq!(format!("{}", TimestampMs(1234)), "1234ms");
+        assert_eq!(format!("{}", TimestampMs(0)), "0ms");
+    }
+
+    #[test]
+    fn timestamp_ms_as_i64() {
+        assert_eq!(TimestampMs(42).as_i64(), 42);
     }
 
     // ── DeviceQuaternion ──
@@ -1060,7 +1140,7 @@ mod tests {
         let traj = dr.finalize();
         let after: Vec<_> = traj
             .iter()
-            .filter(|p| p.source == PointSource::DeadReckoning && p.time_ms > 4100)
+            .filter(|p| p.source == PointSource::DeadReckoning && p.time_ms > TimestampMs(4100))
             .collect();
 
         // Post-gap points should be nearly stationary relative to each other
@@ -1100,7 +1180,7 @@ mod tests {
         assert!(result.is_some());
         let pt = result.unwrap();
         assert_eq!(pt.source, PointSource::Gnss);
-        assert_eq!(pt.time_ms, 1000);
+        assert_eq!(pt.time_ms, TimestampMs(1000));
         assert!(approx_eq(pt.latitude_deg, 36.0, 1e-10));
     }
 
@@ -1196,7 +1276,7 @@ mod tests {
         // finalize should still contain the same point (backward compat)
         let traj = dr.finalize();
         assert_eq!(traj.len(), 1);
-        assert_eq!(traj[0].time_ms, 1000);
+        assert_eq!(traj[0].time_ms, TimestampMs(1000));
         assert_eq!(traj[0].source, PointSource::Gnss);
     }
 
@@ -1215,7 +1295,7 @@ mod tests {
         let mut traj = Vec::with_capacity(n + 2);
         // Start GNSS at t=0
         traj.push(TrajectoryPoint {
-            time_ms: 0,
+            time_ms: TimestampMs(0),
             latitude_deg: base_lat,
             longitude_deg: base_lon,
             altitude_m: 100.0,
@@ -1224,7 +1304,7 @@ mod tests {
         // DR points at t=1000, 2000, ...
         for (i, &(east, north)) in dr_offsets_m.iter().enumerate() {
             traj.push(TrajectoryPoint {
-                time_ms: (i as i64 + 1) * 1000,
+                time_ms: TimestampMs((i as i64 + 1) * 1000),
                 latitude_deg: base_lat + north / METERS_PER_DEG_LAT,
                 longitude_deg: base_lon + east / mpdl,
                 altitude_m: 100.0 + i as f64,
@@ -1233,7 +1313,7 @@ mod tests {
         }
         // End GNSS at t=(n+1)*1000
         traj.push(TrajectoryPoint {
-            time_ms: (n as i64 + 1) * 1000,
+            time_ms: TimestampMs((n as i64 + 1) * 1000),
             latitude_deg: base_lat + end_gnss_offset_m.1 / METERS_PER_DEG_LAT,
             longitude_deg: base_lon + end_gnss_offset_m.0 / mpdl,
             altitude_m: 110.0,
@@ -1371,14 +1451,14 @@ mod tests {
         let base_lon = 140.0;
         let traj = vec![
             TrajectoryPoint {
-                time_ms: 0,
+                time_ms: TimestampMs(0),
                 latitude_deg: base_lat,
                 longitude_deg: base_lon,
                 altitude_m: 100.0,
                 source: PointSource::Gnss,
             },
             TrajectoryPoint {
-                time_ms: 1000,
+                time_ms: TimestampMs(1000),
                 latitude_deg: base_lat + 0.001,
                 longitude_deg: base_lon,
                 altitude_m: 100.0,
@@ -1402,35 +1482,35 @@ mod tests {
         let mpdl = meters_per_deg_lon(base_lat);
         let traj = vec![
             TrajectoryPoint {
-                time_ms: 0,
+                time_ms: TimestampMs(0),
                 latitude_deg: base_lat,
                 longitude_deg: base_lon,
                 altitude_m: 100.0,
                 source: PointSource::Gnss,
             },
             TrajectoryPoint {
-                time_ms: 1000,
+                time_ms: TimestampMs(1000),
                 latitude_deg: base_lat + 50.0 / METERS_PER_DEG_LAT,
                 longitude_deg: base_lon,
                 altitude_m: 100.0,
                 source: PointSource::DeadReckoning,
             },
             TrajectoryPoint {
-                time_ms: 2000,
+                time_ms: TimestampMs(2000),
                 latitude_deg: base_lat,
                 longitude_deg: base_lon + 100.0 / mpdl,
                 altitude_m: 100.0,
                 source: PointSource::Gnss,
             },
             TrajectoryPoint {
-                time_ms: 3000,
+                time_ms: TimestampMs(3000),
                 latitude_deg: base_lat - 50.0 / METERS_PER_DEG_LAT,
                 longitude_deg: base_lon + 100.0 / mpdl,
                 altitude_m: 100.0,
                 source: PointSource::DeadReckoning,
             },
             TrajectoryPoint {
-                time_ms: 4000,
+                time_ms: TimestampMs(4000),
                 latitude_deg: base_lat,
                 longitude_deg: base_lon + 200.0 / mpdl,
                 altitude_m: 100.0,
@@ -1876,17 +1956,17 @@ mod tests {
             .iter()
             .filter(|p| p.source == PointSource::DeadReckoning)
             .collect();
-        let dr_start = 1000_i64;
+        let dr_start = TimestampMs(1000);
         for p in &dr_pts {
             assert!(
-                p.time_ms - dr_start <= 30_000,
-                "DR point at {}ms exceeds max duration (start={})",
+                p.time_ms.elapsed_ms(dr_start) <= 30_000,
+                "DR point at {} exceeds max duration (start={})",
                 p.time_ms,
                 dr_start
             );
         }
         if let Some(last_dr) = dr_pts.last() {
-            assert!(last_dr.time_ms <= 31_000);
+            assert!(last_dr.time_ms <= TimestampMs(31_000));
         }
         let exit_lon = 140.0 + 0.005;
         let last_dr_lon = dr_pts.last().unwrap().longitude_deg;
@@ -2390,7 +2470,7 @@ mod tests {
                 let start = &trajectory[seg.start_gnss];
                 let end = &trajectory[seg.end_gnss];
                 let last_dr = &trajectory[seg.dr_end];
-                let duration_ms = end.time_ms - start.time_ms;
+                let duration_ms = end.time_ms.elapsed_ms(start.time_ms);
                 let dr_count = seg.dr_end - seg.dr_start + 1;
                 let endpoint_error_m = crate::geo::haversine_distance_m(
                     last_dr.latitude_deg,
@@ -2677,11 +2757,14 @@ mod tests {
         let mut best_cluster: Option<Vec<&RealSegment>> = None;
         let mut best_cluster_count = 0;
         for i in 0..segments.len() {
-            let t_start = segments[i].duration_ms + trajectory[segments[i].gnss_start].time_ms;
+            let t_start =
+                segments[i].duration_ms + trajectory[segments[i].gnss_start].time_ms.as_i64();
             let cluster: Vec<&RealSegment> = segments[i..]
                 .iter()
                 .take_while(|s| {
-                    trajectory[s.gnss_end].time_ms - trajectory[segments[i].gnss_start].time_ms
+                    trajectory[s.gnss_end]
+                        .time_ms
+                        .elapsed_ms(trajectory[segments[i].gnss_start].time_ms)
                         < 60_000
                 })
                 .collect();
@@ -2701,8 +2784,9 @@ mod tests {
                 &format!(
                     "Real data: {} gaps in {:.0}s window, {} total DR points",
                     cluster.len(),
-                    (trajectory[cluster.last().unwrap().gnss_end].time_ms
-                        - trajectory[cluster.first().unwrap().gnss_start].time_ms)
+                    trajectory[cluster.last().unwrap().gnss_end]
+                        .time_ms
+                        .elapsed_ms(trajectory[cluster.first().unwrap().gnss_start].time_ms)
                         as f64
                         / 1000.0,
                     total_dr,
