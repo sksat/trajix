@@ -110,6 +110,25 @@ fn analyze_fixes(fixes: &[FixRecord]) {
     }
     println!();
 
+    // Fix quality classification (matches web UI's FixQualitySummary)
+    let qualities =
+        trajix::quality::classify_fixes(fixes, trajix::quality::DEFAULT_GAP_THRESHOLD_MS);
+    let mut primary = 0usize;
+    let mut gap_fallback = 0usize;
+    let mut rejected = 0usize;
+    for q in &qualities {
+        match q {
+            trajix::quality::FixQuality::Primary => primary += 1,
+            trajix::quality::FixQuality::GapFallback => gap_fallback += 1,
+            trajix::quality::FixQuality::Rejected => rejected += 1,
+        }
+    }
+    println!("=== Fix Quality Classification ===");
+    println!("  Primary (GPS+FLP): {primary}");
+    println!("  GapFallback (NLP during gap): {gap_fallback}");
+    println!("  Rejected (NLP redundant): {rejected}");
+    println!();
+
     // Per-provider stats
     let mut by_provider: HashMap<FixProvider, Vec<&FixRecord>> = HashMap::new();
     for f in fixes {
