@@ -53,8 +53,8 @@ pub use types::{CodeType, ConstellationType, FixProvider, RecordType};
 
 // Dead Reckoning
 pub use dead_reckoning::{
-    AttitudeSample, DeadReckoning, DeadReckoningConfig, DeviceQuaternion, GnssFix, ImuSample,
-    IntegrationMethod, PointSource, SmoothingMethod, TimestampMs, TrajectoryPoint,
+    AttitudeSample, DeadReckoning, DeadReckoningConfig, DeviceQuaternion, DrDiagnostics, GnssFix,
+    ImuSample, IntegrationMethod, PointSource, SmoothingMethod, TimestampMs, TrajectoryPoint,
     smooth_trajectory,
 };
 // Downsampling

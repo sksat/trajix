@@ -22,8 +22,8 @@
 use serde::Serialize;
 
 use crate::dead_reckoning::{
-    AttitudeSample, DeadReckoning, DeadReckoningConfig, GnssFix, ImuSample, SmoothingMethod,
-    TrajectoryPoint, smooth_trajectory,
+    AttitudeSample, DeadReckoning, DeadReckoningConfig, DrDiagnostics, GnssFix, ImuSample,
+    SmoothingMethod, TrajectoryPoint, smooth_trajectory,
 };
 use crate::downsample::{DecimatedSample, StreamingDecimator};
 use crate::parser::header::HeaderInfo;
@@ -113,6 +113,7 @@ pub struct ProcessingResult {
     pub status_epochs: Vec<StatusEpoch>,
     pub fix_epochs: Vec<FixEpoch>,
     pub dr_trajectory: Vec<TrajectoryPoint>,
+    pub dr_diagnostics: DrDiagnostics,
     pub satellite_snapshots: Vec<SatelliteSnapshot>,
     pub sensor_time_series: SensorTimeSeries,
 }
@@ -319,6 +320,7 @@ impl GnssProcessor {
 
         // Finalize streaming processors
         let (status_epochs, fix_epochs) = self.aggregator.finalize();
+        let dr_diagnostics = self.dead_reckoning.diagnostics().clone();
         let raw_trajectory = self.dead_reckoning.finalize();
         let dr_trajectory =
             smooth_trajectory(&raw_trajectory, SmoothingMethod::EndpointConstrained);
@@ -332,6 +334,7 @@ impl GnssProcessor {
             status_epochs,
             fix_epochs,
             dr_trajectory,
+            dr_diagnostics,
             satellite_snapshots: self.satellite_snapshots,
             sensor_time_series: SensorTimeSeries {
                 accel: self.accel_decimator.finalize(),

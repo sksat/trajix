@@ -205,6 +205,11 @@ pub struct DeadReckoningConfig {
     pub min_dt_s: f64,
     /// Maximum time step (seconds). Gaps larger than this reset velocity.
     pub max_dt_s: f64,
+    /// Maximum age of attitude data (milliseconds) for IMU integration.
+    /// If the last attitude sample is older than this when `push_imu` is called,
+    /// the IMU sample is rejected (returns `None`).
+    /// `None` disables the staleness check. Default: `Some(500)`.
+    pub max_attitude_age_ms: Option<i64>,
 }
 
 impl Default for DeadReckoningConfig {
@@ -216,6 +221,7 @@ impl Default for DeadReckoningConfig {
             max_dr_duration_ms: 120_000,
             min_dt_s: 0.001,
             max_dt_s: 0.5,
+            max_attitude_age_ms: Some(500),
         }
     }
 }
@@ -285,6 +291,37 @@ struct DrState {
 }
 
 // ────────────────────────────────────────────
+// Diagnostics
+// ────────────────────────────────────────────
+
+/// Diagnostic counters for Dead Reckoning processing.
+#[derive(Debug, Clone, Default)]
+pub struct DrDiagnostics {
+    /// Total IMU samples received.
+    pub imu_total: u64,
+    /// IMU rejected: no attitude available.
+    pub imu_rejected_no_attitude: u64,
+    /// IMU rejected: no DR state (no prior GNSS fix pair).
+    pub imu_rejected_no_state: u64,
+    /// IMU rejected: attitude data too old.
+    pub imu_rejected_stale_attitude: u64,
+    /// IMU rejected: DR segment exceeded max duration.
+    pub imu_rejected_max_duration: u64,
+    /// IMU rejected: time step too small (< min_dt_s).
+    pub imu_rejected_min_dt: u64,
+    /// IMU rejected: time step too large (> max_dt_s), velocity reset.
+    pub imu_rejected_gap: u64,
+    /// IMU samples successfully integrated.
+    pub imu_integrated: u64,
+    /// Total attitude samples received.
+    pub attitude_total: u64,
+    /// Total GNSS fixes received.
+    pub gnss_total: u64,
+    /// GNSS fixes emitted as trajectory points (good accuracy).
+    pub gnss_emitted: u64,
+}
+
+// ────────────────────────────────────────────
 // DeadReckoning processor
 // ────────────────────────────────────────────
 
@@ -297,8 +334,9 @@ pub struct DeadReckoning {
     config: DeadReckoningConfig,
     last_fix: Option<GnssAnchor>,
     state: Option<DrState>,
-    attitude: Option<UnitQuaternion<f64>>,
+    attitude: Option<(UnitQuaternion<f64>, TimestampMs)>,
     trajectory: Vec<TrajectoryPoint>,
+    diag: DrDiagnostics,
 }
 
 impl DeadReckoning {
@@ -309,7 +347,13 @@ impl DeadReckoning {
             state: None,
             attitude: None,
             trajectory: Vec::new(),
+            diag: DrDiagnostics::default(),
         }
+    }
+
+    /// Return diagnostic counters.
+    pub fn diagnostics(&self) -> &DrDiagnostics {
+        &self.diag
     }
 
     // ── Parser-independent API ──
@@ -319,9 +363,11 @@ impl DeadReckoning {
     /// Returns `Some(TrajectoryPoint)` with `source: Gnss` when the fix has good accuracy.
     /// Returns `None` for degraded fixes (which start or continue DR internally).
     pub fn push_gnss(&mut self, fix: &GnssFix) -> Option<TrajectoryPoint> {
+        self.diag.gnss_total += 1;
         let accuracy = fix.accuracy_m.unwrap_or(f64::MAX);
 
         if accuracy <= self.config.accuracy_threshold_m {
+            self.diag.gnss_emitted += 1;
             // Good fix: end DR, update anchor, emit point
             self.state = None;
             self.last_fix = Some(GnssAnchor {
@@ -365,21 +411,46 @@ impl DeadReckoning {
     /// Returns `Some(TrajectoryPoint)` with `source: DeadReckoning` when DR is active
     /// and a new position estimate is produced.
     pub fn push_imu(&mut self, sample: &ImuSample) -> Option<TrajectoryPoint> {
-        let attitude = self.attitude?;
-        let state = self.state.as_mut()?;
+        self.diag.imu_total += 1;
+
+        let (attitude, attitude_time) = match self.attitude {
+            Some(a) => a,
+            None => {
+                self.diag.imu_rejected_no_attitude += 1;
+                return None;
+            }
+        };
+        let state = match self.state.as_mut() {
+            Some(s) => s,
+            None => {
+                self.diag.imu_rejected_no_state += 1;
+                return None;
+            }
+        };
+
+        // Attitude staleness check
+        if let Some(max_age) = self.config.max_attitude_age_ms
+            && sample.time_ms.elapsed_ms(attitude_time) > max_age
+        {
+            self.diag.imu_rejected_stale_attitude += 1;
+            return None;
+        }
 
         // Check max duration
         if sample.time_ms.elapsed_ms(state.dr_start_ms) > self.config.max_dr_duration_ms {
+            self.diag.imu_rejected_max_duration += 1;
             return None;
         }
 
         let dt_s = sample.time_ms.dt_seconds(state.time_ms);
 
         if dt_s < self.config.min_dt_s {
+            self.diag.imu_rejected_min_dt += 1;
             return None;
         }
         if dt_s > self.config.max_dt_s {
             // Large gap: reset velocity, don't integrate
+            self.diag.imu_rejected_gap += 1;
             state.vel_enu = Vector3::zeros();
             state.time_ms = sample.time_ms;
             return None;
@@ -416,12 +487,14 @@ impl DeadReckoning {
             source: PointSource::DeadReckoning,
         };
         self.trajectory.push(point.clone());
+        self.diag.imu_integrated += 1;
         Some(point)
     }
 
     /// Update device attitude from a quaternion sample.
     pub fn push_attitude(&mut self, attitude: &AttitudeSample) {
-        self.attitude = Some(attitude.quaternion.to_unit_quaternion());
+        self.diag.attitude_total += 1;
+        self.attitude = Some((attitude.quaternion.to_unit_quaternion(), attitude.time_ms));
     }
 
     // ── Parser-coupled convenience API ──
@@ -1035,7 +1108,8 @@ mod tests {
     #[test]
     fn dr_constant_velocity_eastward() {
         let mut dr = DeadReckoning::new(DeadReckoningConfig {
-            zupt_speed_threshold_mps: 0.0, // disable ZUPT
+            zupt_speed_threshold_mps: 0.0,  // disable ZUPT
+            max_attitude_age_ms: None,       // disable staleness (test is about velocity)
             ..DeadReckoningConfig::default()
         });
 
@@ -1278,6 +1352,127 @@ mod tests {
         assert_eq!(traj.len(), 1);
         assert_eq!(traj[0].time_ms, TimestampMs(1000));
         assert_eq!(traj[0].source, PointSource::Gnss);
+    }
+
+    // ── Attitude staleness ──
+
+    #[test]
+    fn attitude_staleness_rejects_stale() {
+        let mut dr = DeadReckoning::new(DeadReckoningConfig::default());
+        dr.push_gnss(&GnssFix::from(&make_fix(1000, 5.0, Some(0.0), None)));
+        dr.push_gnss(&GnssFix::from(&make_fix(2000, 50.0, None, None)));
+        dr.push_attitude(&AttitudeSample::from(&make_grv(2000, 0.0, 0.0, 0.0, 1.0)));
+        // IMU within staleness window → should produce DR point
+        let result = dr.push_imu(&ImuSample::from(&make_accel(2010, 0.0, 0.0, GRAVITY_MS2)));
+        assert!(result.is_some());
+        // IMU beyond staleness window (610ms after last attitude) → should return None
+        let result = dr.push_imu(&ImuSample::from(&make_accel(2610, 0.0, 0.0, GRAVITY_MS2)));
+        assert!(
+            result.is_none(),
+            "stale attitude should cause push_imu to return None"
+        );
+    }
+
+    #[test]
+    fn attitude_staleness_accepts_fresh() {
+        let mut dr = DeadReckoning::new(DeadReckoningConfig::default());
+        dr.push_gnss(&GnssFix::from(&make_fix(1000, 5.0, Some(0.0), None)));
+        dr.push_gnss(&GnssFix::from(&make_fix(2000, 50.0, None, None)));
+        dr.push_attitude(&AttitudeSample::from(&make_grv(2000, 0.0, 0.0, 0.0, 1.0)));
+        dr.push_imu(&ImuSample::from(&make_accel(2100, 0.0, 0.0, GRAVITY_MS2)));
+        dr.push_imu(&ImuSample::from(&make_accel(2300, 0.0, 0.0, GRAVITY_MS2)));
+        // Refresh attitude at t=2400 (attitude was getting stale at 400ms)
+        dr.push_attitude(&AttitudeSample::from(&make_grv(2400, 0.0, 0.0, 0.0, 1.0)));
+        // IMU at t=2500: attitude age 100ms (fresh), dt 200ms (ok)
+        let result = dr.push_imu(&ImuSample::from(&make_accel(2500, 0.0, 0.0, GRAVITY_MS2)));
+        assert!(
+            result.is_some(),
+            "fresh attitude should allow DR to continue"
+        );
+    }
+
+    #[test]
+    fn attitude_staleness_disabled() {
+        let config = DeadReckoningConfig {
+            max_attitude_age_ms: None,
+            max_dt_s: 15.0,
+            max_dr_duration_ms: 20_000,
+            ..DeadReckoningConfig::default()
+        };
+        let mut dr = DeadReckoning::new(config);
+        dr.push_gnss(&GnssFix::from(&make_fix(1000, 5.0, Some(0.0), None)));
+        dr.push_gnss(&GnssFix::from(&make_fix(2000, 50.0, None, None)));
+        dr.push_attitude(&AttitudeSample::from(&make_grv(2000, 0.0, 0.0, 0.0, 1.0)));
+        // 10 seconds stale but check disabled (max_dt_s/max_dr_duration raised too)
+        let result =
+            dr.push_imu(&ImuSample::from(&make_accel(12000, 0.0, 0.0, GRAVITY_MS2)));
+        assert!(
+            result.is_some(),
+            "staleness check disabled → should still emit DR"
+        );
+    }
+
+    #[test]
+    fn attitude_staleness_at_threshold() {
+        let mut dr = DeadReckoning::new(DeadReckoningConfig::default());
+        dr.push_gnss(&GnssFix::from(&make_fix(1000, 5.0, Some(0.0), None)));
+        dr.push_gnss(&GnssFix::from(&make_fix(2000, 50.0, None, None)));
+        dr.push_attitude(&AttitudeSample::from(&make_grv(2000, 0.0, 0.0, 0.0, 1.0)));
+        // Exactly at threshold (500ms) → accepted (> not >=)
+        let result = dr.push_imu(&ImuSample::from(&make_accel(2500, 0.0, 0.0, GRAVITY_MS2)));
+        assert!(
+            result.is_some(),
+            "exactly at threshold should be accepted"
+        );
+    }
+
+    #[test]
+    fn attitude_staleness_custom_threshold() {
+        let config = DeadReckoningConfig {
+            max_attitude_age_ms: Some(200),
+            ..DeadReckoningConfig::default()
+        };
+        let mut dr = DeadReckoning::new(config);
+        dr.push_gnss(&GnssFix::from(&make_fix(1000, 5.0, Some(0.0), None)));
+        dr.push_gnss(&GnssFix::from(&make_fix(2000, 50.0, None, None)));
+        dr.push_attitude(&AttitudeSample::from(&make_grv(2000, 0.0, 0.0, 0.0, 1.0)));
+        // 250ms > 200ms threshold
+        let result = dr.push_imu(&ImuSample::from(&make_accel(2250, 0.0, 0.0, GRAVITY_MS2)));
+        assert!(
+            result.is_none(),
+            "250ms > 200ms threshold → should reject"
+        );
+    }
+
+    #[test]
+    fn attitude_staleness_resumes_after_refresh() {
+        let mut dr = DeadReckoning::new(DeadReckoningConfig::default());
+        dr.push_gnss(&GnssFix::from(&make_fix(1000, 5.0, Some(0.0), None)));
+        dr.push_gnss(&GnssFix::from(&make_fix(2000, 50.0, None, None)));
+        dr.push_attitude(&AttitudeSample::from(&make_grv(2000, 0.0, 0.0, 0.0, 1.0)));
+        dr.push_imu(&ImuSample::from(&make_accel(2100, 0.0, 0.0, GRAVITY_MS2)));
+        dr.push_imu(&ImuSample::from(&make_accel(2300, 0.0, 0.0, GRAVITY_MS2)));
+        // Stale: attitude age = 710ms > 500ms (staleness fires before dt check)
+        let stale = dr.push_imu(&ImuSample::from(&make_accel(2710, 0.0, 0.0, GRAVITY_MS2)));
+        assert!(stale.is_none(), "should reject stale");
+        // Refresh attitude
+        dr.push_attitude(&AttitudeSample::from(&make_grv(2800, 0.0, 0.0, 0.0, 1.0)));
+        // First IMU: attitude fresh (10ms), but dt from last successful (2300) = 510ms
+        // → gap handler resets velocity + updates time, returns None
+        dr.push_imu(&ImuSample::from(&make_accel(2810, 0.0, 0.0, GRAVITY_MS2)));
+        // Second IMU: attitude fresh (20ms), dt = 10ms → integration succeeds
+        let fresh = dr.push_imu(&ImuSample::from(&make_accel(2820, 0.0, 0.0, GRAVITY_MS2)));
+        assert!(fresh.is_some(), "should resume after attitude refresh");
+    }
+
+    #[test]
+    fn attitude_staleness_no_attitude() {
+        let mut dr = DeadReckoning::new(DeadReckoningConfig::default());
+        dr.push_gnss(&GnssFix::from(&make_fix(1000, 5.0, Some(0.0), None)));
+        dr.push_gnss(&GnssFix::from(&make_fix(2000, 50.0, None, None)));
+        // No attitude set, DR state active
+        let result = dr.push_imu(&ImuSample::from(&make_accel(2010, 0.0, 0.0, GRAVITY_MS2)));
+        assert!(result.is_none(), "no attitude → push_imu returns None");
     }
 
     // ── Smoothing tests ──
@@ -2090,6 +2285,7 @@ mod tests {
     fn build_highway_turn_trajectory() -> Vec<TrajectoryPoint> {
         let mut dr = DeadReckoning::new(DeadReckoningConfig {
             zupt_speed_threshold_mps: 0.0,
+            max_attitude_age_ms: None, // synthetic scenario — constant attitude phases
             ..DeadReckoningConfig::default()
         });
 
@@ -2257,6 +2453,7 @@ mod tests {
         let mut dr = DeadReckoning::new(DeadReckoningConfig {
             zupt_speed_threshold_mps: 0.0,
             max_dr_duration_ms: 120_000,
+            max_attitude_age_ms: None, // synthetic scenario — single attitude push
             ..DeadReckoningConfig::default()
         });
 

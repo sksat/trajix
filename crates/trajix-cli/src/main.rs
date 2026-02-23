@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::BufReader;
+use std::io::{BufRead, BufReader};
 
 use trajix::geo;
 use trajix::prelude::*;
@@ -73,6 +73,10 @@ fn main() {
     // Altitude spike analysis
     println!("\n=== Altitude Analysis ===");
     analyze_altitude(&fixes);
+
+    // Dead Reckoning pipeline analysis (second pass)
+    println!("\n=== Dead Reckoning Pipeline ===");
+    analyze_dr(&path);
 }
 
 fn analyze_fixes(fixes: &[FixRecord]) {
@@ -704,5 +708,43 @@ fn analyze_altitude(fixes: &[FixRecord]) {
                 seg_max,
             );
         }
+    }
+}
+
+fn analyze_dr(path: &str) {
+    let file = File::open(path).unwrap();
+    let reader = BufReader::new(file);
+    let mut processor = GnssProcessor::new();
+
+    for line in reader.lines() {
+        let line = line.unwrap();
+        processor.process_line(&line);
+    }
+
+    let result = processor.finalize();
+    let d = &result.dr_diagnostics;
+
+    println!(
+        "  GNSS fixes: {} total, {} emitted as trajectory",
+        d.gnss_total, d.gnss_emitted
+    );
+    println!("  Attitude samples: {}", d.attitude_total);
+    println!("  IMU samples: {} total", d.imu_total);
+    println!("    Integrated:           {:>10}", d.imu_integrated);
+    println!("    Rejected (no state):  {:>10}", d.imu_rejected_no_state);
+    println!("    Rejected (no att):    {:>10}", d.imu_rejected_no_attitude);
+    println!("    Rejected (stale att): {:>10}", d.imu_rejected_stale_attitude);
+    println!("    Rejected (max dur):   {:>10}", d.imu_rejected_max_duration);
+    println!("    Rejected (min dt):    {:>10}", d.imu_rejected_min_dt);
+    println!("    Rejected (gap):       {:>10}", d.imu_rejected_gap);
+    println!("  DR trajectory points: {}", result.dr_trajectory.len());
+
+    if d.imu_total > 0 {
+        let pct_integrated = d.imu_integrated as f64 / d.imu_total as f64 * 100.0;
+        let pct_stale = d.imu_rejected_stale_attitude as f64 / d.imu_total as f64 * 100.0;
+        println!(
+            "  Integration rate: {:.1}% ({:.1}% stale attitude rejection)",
+            pct_integrated, pct_stale
+        );
     }
 }
