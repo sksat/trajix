@@ -1,11 +1,16 @@
 import { useEffect, useRef } from "react";
 import * as Cesium from "cesium";
 import "cesium/Build/Cesium/Widgets/widgets.css";
-import type { ProcessingResult, FixQuality } from "../../types/gnss";
+import type { ProcessingResult } from "../../types/gnss";
 import type { FixRecord } from "../../types/gnss";
 import { accuracyToColor } from "../../utils/color";
 import { createGsiTerrainProvider } from "../../utils/gsiTerrain";
 import { filterAltitudeSpikes, smoothAltitudes } from "../../utils/altitude";
+import {
+  findActiveNlpFixes,
+  nlpStyle,
+  type NlpFixEntry,
+} from "../../utils/nlpFilter";
 import "./CesiumMap.css";
 
 // Cesium ion token from env (optional — for PLATEAU 3D buildings)
@@ -17,6 +22,19 @@ const POLYLINE_GAP_MS = 3000;
 
 /// Default playback speed multiplier (50x = ~8 min for 6.5h recording).
 const DEFAULT_MULTIPLIER = 50;
+
+/// Number of reusable NLP entity slots (point + ellipse combined per entity).
+const NLP_POOL_SIZE = 3;
+
+// Pre-allocated Cesium colors for NLP rendering (avoid per-frame allocation)
+const NLP_COLORS = {
+  gapPoint: Cesium.Color.ORANGE.withAlpha(0.9),
+  gapCircle: Cesium.Color.ORANGE.withAlpha(0.35),
+  gapLine: Cesium.Color.ORANGE.withAlpha(0.6),
+  rejPoint: Cesium.Color.RED.withAlpha(0.7),
+  rejCircle: Cesium.Color.RED.withAlpha(0.25),
+  rejLine: Cesium.Color.RED.withAlpha(0.5),
+} as const;
 
 const GSI_CREDIT = new Cesium.Credit(
   '<a href="https://maps.gsi.go.jp/development/ichiran.html">国土地理院</a>',
@@ -47,6 +65,17 @@ export function CesiumMap({
 }: CesiumMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<Cesium.Viewer | null>(null);
+
+  // NLP time-based rendering state
+  const nlpFixesRef = useRef<NlpFixEntry[]>([]);
+  const nlpPoolRef = useRef<Cesium.Entity[]>([]);
+  const nlpLinePoolRef = useRef<Cesium.Entity[]>([]);
+  const nlpLinePositionsRef = useRef<Cesium.Cartesian3[][]>([]);
+  const nlpLastRenderedRef = useRef<number[]>([]);
+  /** Cached start time (unix ms) for efficient JulianDate→ms conversion. */
+  const nlpStartMsRef = useRef<number>(0);
+  /** Animation marker entity for connecting NLP dashed lines. */
+  const markerRef = useRef<Cesium.Entity | null>(null);
 
   // Initialize viewer once
   useEffect(() => {
@@ -117,7 +146,7 @@ export function CesiumMap({
     );
   }, [imagery]);
 
-  // Render track + animation marker when result or NLP toggle changes.
+  // Render track + animation marker when result changes.
   // Terrain sampling is async, so we use a cancellation flag.
   useEffect(() => {
     const viewer = viewerRef.current;
@@ -125,9 +154,35 @@ export function CesiumMap({
 
     let cancelled = false;
 
+    // Prepare sorted NLP fixes for time-based rendering
+    const nlpEntries: NlpFixEntry[] = [];
+    for (let i = 0; i < result.fixes.length; i++) {
+      const q = result.fix_qualities[i]!;
+      if (q === "GapFallback" || q === "Rejected") {
+        nlpEntries.push({
+          fix: result.fixes[i]!,
+          quality: q as "GapFallback" | "Rejected",
+        });
+      }
+    }
+    nlpEntries.sort((a, b) => a.fix.unix_time_ms - b.fix.unix_time_ms);
+    nlpFixesRef.current = nlpEntries;
+
+    // Clear NLP pool (removeAll below destroys those entities)
+    nlpPoolRef.current = [];
+    nlpLinePoolRef.current = [];
+    nlpLinePositionsRef.current = [];
+    nlpLastRenderedRef.current = [];
+    markerRef.current = null;
+
     const primaryFixes = result.fixes.filter(
       (_, i) => result.fix_qualities[i] === "Primary",
     );
+
+    // Cache start time for efficient JulianDate→ms conversion
+    if (primaryFixes.length > 0) {
+      nlpStartMsRef.current = primaryFixes[0]!.unix_time_ms;
+    }
 
     // Sample terrain heights, filter altitude spikes, then render
     clampBelowTerrain(viewer.terrainProvider, primaryFixes).then((heights) => {
@@ -152,19 +207,7 @@ export function CesiumMap({
       addColoredTrack(viewer, primaryFixes, smoothedHeights);
 
       if (primaryFixes.length >= 2) {
-        setupAnimationMarker(viewer, primaryFixes, smoothedHeights);
-      }
-
-      // Optional NLP layer
-      if (showNlp) {
-        const nlpFixes: { fix: FixRecord; quality: FixQuality }[] = [];
-        for (let i = 0; i < result.fixes.length; i++) {
-          const q = result.fix_qualities[i]!;
-          if (q === "GapFallback" || q === "Rejected") {
-            nlpFixes.push({ fix: result.fixes[i]!, quality: q });
-          }
-        }
-        addNlpPoints(viewer, nlpFixes);
+        markerRef.current = setupAnimationMarker(viewer, primaryFixes, smoothedHeights);
       }
 
       // Fly to entities with a tilted camera so terrain relief is visible
@@ -187,7 +230,228 @@ export function CesiumMap({
     return () => {
       cancelled = true;
     };
-  }, [result, showNlp]);
+  }, [result]);
+
+  // ── Time-based NLP rendering via preRender ──
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!viewer) return;
+
+    if (!showNlp) {
+      // Hide all pool entities when NLP layer is off
+      for (const entity of nlpPoolRef.current) entity.show = false;
+      for (const line of nlpLinePoolRef.current) line.show = false;
+      return;
+    }
+
+    // Create pool if it doesn't exist (first toggle or after result change)
+    if (nlpPoolRef.current.length === 0) {
+      const pool: Cesium.Entity[] = [];
+      const linePool: Cesium.Entity[] = [];
+      const linePositions: Cesium.Cartesian3[][] = [];
+      for (let i = 0; i < NLP_POOL_SIZE; i++) {
+        // NLP station entity: point + label + accuracy ellipse
+        const entity = viewer.entities.add({
+          show: false,
+          position: Cesium.Cartesian3.fromDegrees(0, 0, 0),
+          point: {
+            pixelSize: 8,
+            color: NLP_COLORS.gapPoint,
+            outlineColor: Cesium.Color.WHITE,
+            outlineWidth: 1,
+            heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+            disableDepthTestDistance: Number.POSITIVE_INFINITY,
+          },
+          label: {
+            text: "\u{1F4E1}",
+            font: "16px sans-serif",
+            verticalOrigin: Cesium.VerticalOrigin.CENTER,
+            showBackground: false,
+            disableDepthTestDistance: Number.POSITIVE_INFINITY,
+            heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+          },
+          ellipse: {
+            semiMajorAxis: 100,
+            semiMinorAxis: 100,
+            material: new Cesium.ColorMaterialProperty(NLP_COLORS.gapCircle),
+            outline: false,
+            heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+          },
+        });
+        pool.push(entity);
+
+        // Dashed line: use CallbackProperty to avoid per-frame property allocation
+        const posArray = [
+          new Cesium.Cartesian3(),
+          new Cesium.Cartesian3(),
+        ];
+        linePositions.push(posArray);
+        const lineEntity = viewer.entities.add({
+          show: false,
+          polyline: {
+            positions: new Cesium.CallbackProperty(() => posArray, false),
+            width: 2,
+            material: new Cesium.PolylineDashMaterialProperty({
+              color: NLP_COLORS.gapLine,
+              dashLength: 16,
+            }),
+          },
+        });
+        linePool.push(lineEntity);
+      }
+      nlpPoolRef.current = pool;
+      nlpLinePoolRef.current = linePool;
+      nlpLinePositionsRef.current = linePositions;
+      nlpLastRenderedRef.current = new Array(NLP_POOL_SIZE).fill(-1);
+    }
+
+    const pool = nlpPoolRef.current;
+    const linePool = nlpLinePoolRef.current;
+    const startMs = nlpStartMsRef.current;
+    let lastTimeMs = -1;
+    // Pre-allocated scratch objects for NLP line altitude adjustment
+    const scratchNlpCarto = new Cesium.Cartographic();
+    const scratchMarkerCarto = new Cesium.Cartographic();
+
+    const onPreRender = () => {
+      const nlpFixes = nlpFixesRef.current;
+      if (nlpFixes.length === 0) {
+        for (const entity of pool) entity.show = false;
+        for (const line of linePool) line.show = false;
+        return;
+      }
+
+      // Convert JulianDate -> unix ms without Date allocation
+      const elapsedSec = Cesium.JulianDate.secondsDifference(
+        viewer.clock.currentTime,
+        viewer.clock.startTime,
+      );
+      const currentMs = startMs + elapsedSec * 1000;
+
+      // Gate: skip if time hasn't changed (pause optimization)
+      const roundedMs = Math.round(currentMs);
+      if (roundedMs === lastTimeMs) return;
+      lastTimeMs = roundedMs;
+
+      // When paused, show the most recent NLP fix regardless of linger time
+      // (otherwise NLP disappears at end-of-timeline or after seeking)
+      const lingerMs = viewer.clock.shouldAnimate ? undefined : Infinity;
+      const active = findActiveNlpFixes(nlpFixes, currentMs, lingerMs);
+      const matchCount = Math.min(active.length, pool.length);
+
+      // Update NLP entity slots
+      for (let i = 0; i < matchCount; i++) {
+        const entry = active[i]!;
+        const entryMs = entry.fix.unix_time_ms;
+
+        // Skip if this slot already shows the same fix
+        if (nlpLastRenderedRef.current[i] === entryMs) {
+          pool[i]!.show = true;
+          continue;
+        }
+        nlpLastRenderedRef.current[i] = entryMs;
+
+        const f = entry.fix as FixRecord;
+        const style = nlpStyle(entry.quality);
+        const entity = pool[i]!;
+
+        // Update position
+        const pos = Cesium.Cartesian3.fromDegrees(
+          f.longitude_deg,
+          f.latitude_deg,
+          f.altitude_m ?? 0,
+        );
+        (entity.position as Cesium.ConstantPositionProperty).setValue(pos);
+
+        // Update point style
+        const pointColor =
+          style.hue === "orange" ? NLP_COLORS.gapPoint : NLP_COLORS.rejPoint;
+        entity.point!.pixelSize =
+          new Cesium.ConstantProperty(style.pointSize) as unknown as
+            Cesium.Property;
+        entity.point!.color =
+          new Cesium.ConstantProperty(pointColor) as unknown as
+            Cesium.Property;
+
+        // Update ellipse style
+        const accuracy = f.accuracy_m ?? 100;
+        const circleColor =
+          style.hue === "orange" ? NLP_COLORS.gapCircle : NLP_COLORS.rejCircle;
+        entity.ellipse!.semiMajorAxis =
+          new Cesium.ConstantProperty(accuracy) as unknown as Cesium.Property;
+        entity.ellipse!.semiMinorAxis =
+          new Cesium.ConstantProperty(accuracy) as unknown as Cesium.Property;
+        entity.ellipse!.material = new Cesium.ColorMaterialProperty(
+          circleColor,
+        );
+
+        // Update line material (only when NLP fix changes)
+        if (linePool[i]) {
+          const lineColor =
+            style.hue === "orange" ? NLP_COLORS.gapLine : NLP_COLORS.rejLine;
+          linePool[i]!.polyline!.material =
+            new Cesium.PolylineDashMaterialProperty({
+              color: lineColor,
+              dashLength: 16,
+            });
+        }
+
+        entity.show = accuracy > 0;
+      }
+
+      // Hide unused NLP entity slots
+      for (let i = matchCount; i < pool.length; i++) {
+        pool[i]!.show = false;
+        nlpLastRenderedRef.current[i] = -1;
+      }
+
+      // Update dashed lines from NLP station to animation marker (in-place)
+      const markerEntity = markerRef.current;
+      const markerPos = markerEntity?.position?.getValue(
+        viewer.clock.currentTime,
+      );
+      const linePositions = nlpLinePositionsRef.current;
+      for (let i = 0; i < matchCount; i++) {
+        if (!pool[i]!.show || !markerPos || !linePositions[i]) {
+          linePool[i]!.show = false;
+          continue;
+        }
+        const nlpPos = (
+          pool[i]!.position as Cesium.ConstantPositionProperty
+        ).getValue(viewer.clock.currentTime);
+        if (nlpPos) {
+          // Elevate NLP endpoint to marker's altitude so line is above terrain
+          Cesium.Cartographic.fromCartesian(
+            nlpPos, undefined, scratchNlpCarto,
+          );
+          Cesium.Cartographic.fromCartesian(
+            markerPos, undefined, scratchMarkerCarto,
+          );
+          scratchNlpCarto.height = scratchMarkerCarto.height;
+          viewer.scene.globe.ellipsoid.cartographicToCartesian(
+            scratchNlpCarto, linePositions[i]![0]!,
+          );
+          Cesium.Cartesian3.clone(markerPos, linePositions[i]![1]!);
+          linePool[i]!.show = true;
+        } else {
+          linePool[i]!.show = false;
+        }
+      }
+      // Hide unused line slots
+      for (let i = matchCount; i < linePool.length; i++) {
+        linePool[i]!.show = false;
+      }
+    };
+
+    viewer.scene.preRender.addEventListener(onPreRender);
+
+    return () => {
+      if (viewer.isDestroyed()) return;
+      viewer.scene.preRender.removeEventListener(onPreRender);
+      for (const entity of pool) entity.show = false;
+      for (const line of linePool) line.show = false;
+    };
+  }, [showNlp, result]);
 
   return <div ref={containerRef} className="cesium-map-container" />;
 }
@@ -366,59 +630,3 @@ function addColoredTrack(
   }
 }
 
-// ────────────────────────────────────────────
-// NLP points
-// ────────────────────────────────────────────
-
-/**
- * Add NLP fixes as semi-transparent points with accuracy circles.
- */
-function addNlpPoints(
-  viewer: Cesium.Viewer,
-  fixes: { fix: FixRecord; quality: FixQuality }[],
-) {
-  for (const { fix: f, quality } of fixes) {
-    const position = Cesium.Cartesian3.fromDegrees(
-      f.longitude_deg,
-      f.latitude_deg,
-      f.altitude_m ?? 0,
-    );
-
-    const isGapFallback = quality === "GapFallback";
-    const pointColor = isGapFallback
-      ? Cesium.Color.ORANGE.withAlpha(0.7)
-      : Cesium.Color.RED.withAlpha(0.4);
-    const circleColor = isGapFallback
-      ? Cesium.Color.ORANGE.withAlpha(0.15)
-      : Cesium.Color.RED.withAlpha(0.08);
-
-    // Point marker
-    viewer.entities.add({
-      position,
-      point: {
-        pixelSize: isGapFallback ? 6 : 4,
-        color: pointColor,
-        outlineWidth: 0,
-      },
-    });
-
-    // Accuracy circle
-    const accuracy = f.accuracy_m ?? 100;
-    if (accuracy > 0) {
-      viewer.entities.add({
-        position: Cesium.Cartesian3.fromDegrees(
-          f.longitude_deg,
-          f.latitude_deg,
-        ),
-        ellipse: {
-          semiMajorAxis: accuracy,
-          semiMinorAxis: accuracy,
-          material: new Cesium.ColorMaterialProperty(circleColor),
-          outline: true,
-          outlineColor: pointColor,
-          outlineWidth: 1,
-        },
-      });
-    }
-  }
-}
