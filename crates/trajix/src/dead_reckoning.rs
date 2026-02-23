@@ -2053,7 +2053,6 @@ mod tests {
     #[ignore]
     fn dr_viz_tunnel_traverse() {
         let traj = build_tunnel_trajectory();
-        let mpdl = meters_per_deg_lon(36.0);
 
         let dr_pts: Vec<_> = traj
             .iter()
@@ -2070,18 +2069,17 @@ mod tests {
             last_dr.longitude_deg > first_dr.longitude_deg,
             "DR should move east"
         );
-        let exit_lon = 140.0 + (65.0 * 20.0) / mpdl;
-        let drift_m = (last_dr.longitude_deg - exit_lon).abs() * mpdl;
+        // Curved tunnel turns right — DR should move south
         assert!(
-            drift_m < 2000.0,
-            "DR drift should be bounded, got {drift_m:.0}m"
+            last_dr.latitude_deg < first_dr.latitude_deg,
+            "DR should curve south during 30° right turn"
         );
 
         save_comparison(
             &traj,
             "tunnel_traverse",
-            "Tunnel Traverse",
-            "60s GNSS outage at 72 km/h east — IMU coasting through tunnel",
+            "Tunnel Traverse (Curved)",
+            "60s GNSS outage at 72 km/h — gentle 30° right curve inside tunnel",
         );
     }
 
@@ -2448,20 +2446,28 @@ mod tests {
         dr.finalize()
     }
 
-    /// Build a tunnel-traverse trajectory (reusable for comparison).
+    /// Build a curved tunnel-traverse trajectory (reusable for comparison).
+    ///
+    /// Simulates a highway tunnel with a gentle 30° right curve:
+    /// - Pre-tunnel: 5 GNSS fixes heading east at 72 km/h
+    /// - Phase 1: 20s straight east (IMU coasting)
+    /// - Phase 2: 10s gentle right curve (30°, radius ~382m)
+    /// - Phase 3: 30s straight at bearing 120° (ESE)
+    /// - Post-tunnel: 5 GNSS fixes at exit heading
     fn build_tunnel_trajectory() -> Vec<TrajectoryPoint> {
         let mut dr = DeadReckoning::new(DeadReckoningConfig {
             zupt_speed_threshold_mps: 0.0,
             max_dr_duration_ms: 120_000,
-            max_attitude_age_ms: None, // synthetic scenario — single attitude push
+            max_attitude_age_ms: None, // synthetic — attitude pushed per phase
             ..DeadReckoningConfig::default()
         });
 
         let base_lat = 36.0;
         let base_lon = 140.0;
-        let speed = 20.0;
+        let speed = 20.0; // m/s (~72 km/h)
         let mpdl = meters_per_deg_lon(base_lat);
 
+        // Pre-tunnel: 5 GNSS fixes heading east
         for i in 0..5 {
             let lon = base_lon + (i as f64 * speed) / mpdl;
             dr.push_gnss(&GnssFix::from(&make_fix_at(
@@ -2474,11 +2480,21 @@ mod tests {
             )));
         }
 
+        // Tunnel entry — degraded GNSS
         dr.push_gnss(&GnssFix::from(&make_fix_at(
             5000, 200.0, None, None, base_lat, base_lon,
         )));
-        dr.push_attitude(&AttitudeSample::from(&make_grv(5000, 0.0, 0.0, 0.0, 1.0)));
-        for i in 1..=6000 {
+
+        // Heading angles (convention: 0=North, π/2=East, increases clockwise)
+        let east_angle = std::f64::consts::FRAC_PI_2;
+        let turn_rad = std::f64::consts::PI / 6.0; // 30°
+
+        // Phase 1: 20s straight east
+        let half_east = east_angle / 2.0;
+        dr.push_attitude(&AttitudeSample::from(&make_grv(
+            5000, 0.0, 0.0, half_east.sin(), half_east.cos(),
+        )));
+        for i in 1..=2000 {
             dr.push_imu(&ImuSample::from(&make_accel(
                 5000 + i * 10,
                 0.0,
@@ -2487,15 +2503,67 @@ mod tests {
             )));
         }
 
-        let exit_lon = base_lon + (65.0 * speed) / mpdl;
+        // Phase 2: 10s gentle right curve (30°)
+        let turn_duration_s = 10.0;
+        let turn_samples = 1000;
+        let r = speed * turn_duration_s / turn_rad;
+        let a_c = speed * speed / r;
+        for i in 1..=turn_samples {
+            let frac = i as f64 / turn_samples as f64;
+            let angle = east_angle + frac * turn_rad;
+            let half = angle / 2.0;
+            dr.push_attitude(&AttitudeSample::from(&make_grv(
+                25000 + i * 10,
+                0.0,
+                0.0,
+                half.sin(),
+                half.cos(),
+            )));
+            dr.push_imu(&ImuSample::from(&make_accel(
+                25000 + i * 10,
+                a_c,
+                0.0,
+                GRAVITY_MS2,
+            )));
+        }
+
+        // Phase 3: 30s straight at exit heading (bearing 120°)
+        let exit_angle = east_angle + turn_rad;
+        let half_exit = exit_angle / 2.0;
+        dr.push_attitude(&AttitudeSample::from(&make_grv(
+            35000, 0.0, 0.0, half_exit.sin(), half_exit.cos(),
+        )));
+        for i in 1..=3000 {
+            dr.push_imu(&ImuSample::from(&make_accel(
+                35000 + i * 10,
+                0.0,
+                0.0,
+                GRAVITY_MS2,
+            )));
+        }
+
+        // Exit position (approximate from anchor at last good GNSS fix):
+        //   Phase 1: 400m east, 0 north
+        //   Phase 2: ~191m east, ~-51m north (30° curve)
+        //   Phase 3: ~520m east, ~-300m north (bearing 120°)
+        //   Total: ~1111m east, ~-351m south
+        let exit_bearing_deg = 120.0_f64;
+        let exit_bearing_rad = exit_bearing_deg.to_radians();
+        let anchor_lon = base_lon + (4.0 * speed) / mpdl;
+        let exit_lat = base_lat - 351.0 / METERS_PER_DEG_LAT;
+        let exit_lon = anchor_lon + 1111.0 / mpdl;
+
+        // Post-tunnel: 5 GNSS fixes heading ESE (bearing 120°)
         for i in 0..5 {
-            let lon = exit_lon + (i as f64 * speed) / mpdl;
+            let d = i as f64 * speed;
+            let lat = exit_lat + d * exit_bearing_rad.cos() / METERS_PER_DEG_LAT;
+            let lon = exit_lon + d * exit_bearing_rad.sin() / mpdl;
             dr.push_gnss(&GnssFix::from(&make_fix_at(
                 65000 + i * 1000,
                 5.0,
                 Some(speed),
-                Some(90.0),
-                base_lat,
+                Some(exit_bearing_deg),
+                lat,
                 lon,
             )));
         }
