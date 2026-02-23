@@ -429,6 +429,7 @@ export function CesiumMap({
           viewer.scene.globe.ellipsoid.cartographicToCartesian(
             scratchNlpCarto, linePositions[i]![0]!,
           );
+          // Marker endpoint at actual device altitude
           Cesium.Cartesian3.clone(markerPos, linePositions[i]![1]!);
           linePool[i]!.show = true;
         } else {
