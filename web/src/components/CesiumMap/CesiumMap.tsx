@@ -9,6 +9,7 @@ import { filterAltitudeSpikes, smoothAltitudes } from "../../utils/altitude";
 import {
   findActiveNlpFixes,
   nlpStyle,
+  nlpRenderHeight,
   type NlpFixEntry,
 } from "../../utils/nlpFilter";
 import "./CesiumMap.css";
@@ -309,9 +310,8 @@ export function CesiumMap({
     const linePool = nlpLinePoolRef.current;
     const startMs = nlpStartMsRef.current;
     let lastTimeMs = -1;
-    // Pre-allocated scratch objects for NLP line altitude adjustment
+    // Pre-allocated scratch object for NLP line endpoint conversion
     const scratchNlpCarto = new Cesium.Cartographic();
-    const scratchMarkerCarto = new Cesium.Cartographic();
 
     const onPreRender = () => {
       const nlpFixes = nlpFixesRef.current;
@@ -355,11 +355,11 @@ export function CesiumMap({
         const style = nlpStyle(entry.quality);
         const entity = pool[i]!;
 
-        // Update position
+        // Update position (always ground-clamped, never at GPS/marker altitude)
         const pos = Cesium.Cartesian3.fromDegrees(
           f.longitude_deg,
           f.latitude_deg,
-          f.altitude_m ?? 0,
+          nlpRenderHeight(f.altitude_m),
         );
         (entity.position as Cesium.ConstantPositionProperty).setValue(pos);
 
@@ -420,14 +420,11 @@ export function CesiumMap({
           pool[i]!.position as Cesium.ConstantPositionProperty
         ).getValue(viewer.clock.currentTime);
         if (nlpPos) {
-          // Elevate NLP endpoint to marker's altitude so line is above terrain
+          // NLP endpoint stays at ground level (height=0); line slopes up to marker
           Cesium.Cartographic.fromCartesian(
             nlpPos, undefined, scratchNlpCarto,
           );
-          Cesium.Cartographic.fromCartesian(
-            markerPos, undefined, scratchMarkerCarto,
-          );
-          scratchNlpCarto.height = scratchMarkerCarto.height;
+          scratchNlpCarto.height = nlpRenderHeight(null);
           viewer.scene.globe.ellipsoid.cartographicToCartesian(
             scratchNlpCarto, linePositions[i]![0]!,
           );

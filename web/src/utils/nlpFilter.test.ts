@@ -3,6 +3,7 @@ import {
   lowerBoundNlp,
   findActiveNlpFixes,
   nlpStyle,
+  nlpRenderHeight,
   type NlpFixEntry,
 } from "./nlpFilter";
 
@@ -156,6 +157,34 @@ describe("findActiveNlpFixes", () => {
     // At time 11000, recent burst is 10000-10400
     const result = findActiveNlpFixes(fixes, 11000);
     expect(result).toEqual([makeFix(10000), makeFix(10200), makeFix(10400)]);
+  });
+});
+
+// ────────────────────────────────────────────
+// nlpStyle
+// ────────────────────────────────────────────
+
+// ────────────────────────────────────────────
+// nlpRenderHeight
+// ────────────────────────────────────────────
+
+describe("nlpRenderHeight", () => {
+  it("returns 0 for null altitude (most NLP fixes)", () => {
+    expect(nlpRenderHeight(null)).toBe(0);
+  });
+
+  it("returns 0 even when NLP fix has altitude", () => {
+    // NLP markers should always be ground-clamped, never at GPS altitude
+    expect(nlpRenderHeight(288)).toBe(0);
+  });
+
+  it("returns 0 for high altitude (flight scenario)", () => {
+    // Even if NLP reports altitude during flight, render at ground
+    expect(nlpRenderHeight(10000)).toBe(0);
+  });
+
+  it("returns 0 for zero altitude", () => {
+    expect(nlpRenderHeight(0)).toBe(0);
   });
 });
 

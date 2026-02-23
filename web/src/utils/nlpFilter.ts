@@ -75,6 +75,15 @@ export function findActiveNlpFixes(
   return fixes.slice(burstStart, latestIdx + 1);
 }
 
+/**
+ * Return the height to use for NLP entity positions and line endpoints.
+ * Always 0 — CesiumJS CLAMP_TO_GROUND adjusts to actual terrain surface.
+ * NLP markers must never float at GPS/marker altitude.
+ */
+export function nlpRenderHeight(_altitudeM: number | null): number {
+  return 0;
+}
+
 export interface NlpFixStyle {
   pointSize: number;
   pointAlpha: number;
