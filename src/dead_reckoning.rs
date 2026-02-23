@@ -1777,7 +1777,7 @@ mod tests {
     }
 
     fn save_svg(name: &str, svg: &str) {
-        let dir = format!("{}/../../assets/dr", env!("CARGO_MANIFEST_DIR"));
+        let dir = format!("{}/assets/dr", env!("CARGO_MANIFEST_DIR"));
         std::fs::create_dir_all(&dir).unwrap();
         let path = format!("{dir}/{name}.svg");
         std::fs::write(&path, svg).unwrap();
@@ -2700,7 +2700,7 @@ mod tests {
 
     /// Parse a real GNSS log file through the DR pipeline.
     fn parse_real_log(filename: &str) -> Vec<TrajectoryPoint> {
-        let path = format!("{}/../../{}", env!("CARGO_MANIFEST_DIR"), filename);
+        let path = format!("{}/{}", env!("CARGO_MANIFEST_DIR"), filename);
         let file = std::fs::File::open(&path).unwrap_or_else(|e| {
             panic!("Could not open {path}: {e}. Real data file required for this test.");
         });
@@ -2842,7 +2842,7 @@ mod tests {
             "gnss_log_2025_11_29_10_31_31.txt",
             "gnss_log_2026_02_21_11_42_28.txt",
         ] {
-            let path = format!("{}/../../{}", env!("CARGO_MANIFEST_DIR"), filename);
+            let path = format!("{}/{}", env!("CARGO_MANIFEST_DIR"), filename);
             if !std::path::Path::new(&path).exists() {
                 eprintln!("Skipping {filename} (not found)");
                 continue;
@@ -2938,7 +2938,7 @@ mod tests {
 
     /// Generate comparison SVGs for the most interesting segments in a log file.
     fn generate_real_data_svgs(filename: &str, prefix: &str, label: &str) {
-        let path = format!("{}/../../{}", env!("CARGO_MANIFEST_DIR"), filename);
+        let path = format!("{}/{}", env!("CARGO_MANIFEST_DIR"), filename);
         if !std::path::Path::new(&path).exists() {
             panic!("{filename} not found — required for this test");
         }

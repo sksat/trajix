@@ -37,7 +37,7 @@ jobs:
         run: curl -sSf https://rustwasm.github.io/wasm-pack/installer/init.sh | sh
 
       - name: Build WASM
-        run: wasm-pack build crates/trajix-wasm --target web --out-dir pkg
+        run: wasm-pack build wasm --target web --out-dir pkg
 
       - uses: pnpm/action-setup@v4.2.0
         with:

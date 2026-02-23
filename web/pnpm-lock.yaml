@@ -21,8 +21,8 @@ importers:
         specifier: ^19.1.0
         version: 19.2.4(react@19.2.4)
       trajix-wasm:
-        specifier: file:../crates/trajix-wasm/pkg
-        version: file:../crates/trajix-wasm/pkg
+        specifier: file:../wasm/pkg
+        version: file:../wasm/pkg
       uplot:
         specifier: ^1.6.32
         version: 1.6.32
@@ -1358,8 +1358,8 @@ packages:
     resolution: {integrity: sha512-bLVMLPtstlZ4iMQHpFHTR7GAGj2jxi8Dg0s2h2MafAE4uSWF98FC/3MomU51iQAMf8/qDUbKWf5GxuvvVcXEhw==}
     engines: {node: '>=20'}
 
-  trajix-wasm@file:../crates/trajix-wasm/pkg:
-    resolution: {directory: ../crates/trajix-wasm/pkg, type: directory}
+  trajix-wasm@file:../wasm/pkg:
+    resolution: {directory: ../wasm/pkg, type: directory}
 
   tslib@2.8.1:
     resolution: {integrity: sha512-oJFu94HQb+KVduSUQL7wnpmqnfmLsOA/nAh6b6EH0wCEoK0/mPeXU6c3wKDV83MkOuHPRHtSXKKU99IBazS/2w==}
@@ -2760,7 +2760,7 @@ snapshots:
     dependencies:
       punycode: 2.3.1
 
-  trajix-wasm@file:../crates/trajix-wasm/pkg: {}
+  trajix-wasm@file:../wasm/pkg: {}
 
   tslib@2.8.1: {}
 

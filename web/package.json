@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build && mv dist/trajix/cesium dist/cesium && rm -r dist/trajix",
     "preview": "vite preview",
-    "wasm:build": "wasm-pack build ../crates/trajix-wasm --target web --out-dir pkg",
+    "wasm:build": "wasm-pack build ../wasm --target web --out-dir pkg",
     "test": "vitest run",
     "test:watch": "vitest"
   },
@@ -16,7 +16,7 @@
     "cesium": "^1.138.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
-    "trajix-wasm": "file:../crates/trajix-wasm/pkg",
+    "trajix-wasm": "file:../wasm/pkg",
     "uplot": "^1.6.32"
   },
   "devDependencies": {
