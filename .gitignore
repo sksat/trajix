@@ -19,3 +19,9 @@ dist/
 
 # WASM build
 /pkg/
+
+# Temporary working directory
+/tmp/
+
+# Playwright MCP logs
+.playwright-mcp/
