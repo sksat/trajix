@@ -124,10 +124,10 @@ use trajix::prelude::*;
 let file = std::fs::File::open("gnss_log.txt").unwrap();
 let parser = StreamingParser::new(std::io::BufReader::new(file));
 
-let mut dr = DeadReckoning::new(DrConfig::default());
+let mut dr = DeadReckoning::new(DeadReckoningConfig::default());
 for result in parser {
     if let Ok(record) = result {
-        if let Some(point) = dr.push(&record) {
+        if let Some(point) = dr.push_record(&record) {
             println!("{}: ({}, {}) [{:?}]",
                 point.time_ms, point.latitude_deg, point.longitude_deg, point.source);
         }
@@ -183,7 +183,11 @@ Blue = GNSS fix, red dashed = IMU-only DR, green dashed = linear interpolation, 
 | `stats` | Statistical summaries: `summarize_fixes`, `PercentileStats` |
 | `summary` | Epoch aggregation: `EpochAggregator`, `StatusEpoch`, `FixEpoch` |
 | `downsample` | Time-series reduction: `decimate_by_time`, `lttb`, `StreamingDecimator` |
-| `dead_reckoning` | GNSS + IMU fusion: `DeadReckoning`, `DrConfig`, streaming `push()` API |
+| `dead_reckoning` | GNSS + IMU fusion: `DeadReckoning`, `DeadReckoningConfig`, streaming `push_record()` API |
+| `altitude` | Altitude analysis: `filter_altitude_spikes`, `smooth_altitudes`, vertical velocity |
+| `anomaly` | Jump/anomaly detection: `analyze_jumps`, implied speed histograms |
+| `coverage` | Gap analysis: `analyze_coverage`, NLP gap detection |
+| `pipeline` | Streaming processor: `GnssProcessor`, `ProcessingResult` |
 
 ## Record types
 
