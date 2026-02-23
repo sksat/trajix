@@ -327,9 +327,9 @@ pub struct DrDiagnostics {
 
 /// Streaming Dead Reckoning processor.
 ///
-/// Feed sensor data in chronological order via [`push_gnss`], [`push_imu`],
-/// [`push_attitude`], or dispatch parsed records via [`push_record`], then
-/// call [`finalize`] to get the merged trajectory.
+/// Feed sensor data in chronological order via [`Self::push_gnss`], [`Self::push_imu`],
+/// [`Self::push_attitude`], or dispatch parsed records via [`Self::push_record`], then
+/// call [`Self::finalize`] to get the merged trajectory.
 pub struct DeadReckoning {
     config: DeadReckoningConfig,
     last_fix: Option<GnssAnchor>,
