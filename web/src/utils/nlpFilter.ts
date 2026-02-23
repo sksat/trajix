@@ -76,12 +76,14 @@ export function findActiveNlpFixes(
 }
 
 /**
- * Return the height to use for NLP entity positions and line endpoints.
- * Always 0 — CesiumJS CLAMP_TO_GROUND adjusts to actual terrain surface.
- * NLP markers must never float at GPS/marker altitude.
+ * Determine height for NLP line endpoints from terrain data.
+ *
+ * Uses `globe.getHeight()` result when terrain is loaded at that location.
+ * Falls back to 0 (ellipsoid surface) when terrain tiles are not yet loaded.
+ * NLP point/label/ellipse entities use CLAMP_TO_GROUND independently.
  */
-export function nlpRenderHeight(_altitudeM: number | null): number {
-  return 0;
+export function nlpTerrainHeight(globeHeight: number | undefined): number {
+  return globeHeight ?? 0;
 }
 
 export interface NlpFixStyle {

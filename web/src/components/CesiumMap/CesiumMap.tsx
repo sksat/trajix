@@ -9,7 +9,7 @@ import { filterAltitudeSpikes, smoothAltitudes } from "../../utils/altitude";
 import {
   findActiveNlpFixes,
   nlpStyle,
-  nlpRenderHeight,
+  nlpTerrainHeight,
   type NlpFixEntry,
 } from "../../utils/nlpFilter";
 import "./CesiumMap.css";
@@ -355,11 +355,11 @@ export function CesiumMap({
         const style = nlpStyle(entry.quality);
         const entity = pool[i]!;
 
-        // Update position (always ground-clamped, never at GPS/marker altitude)
+        // Update position — height=0 is fine; CLAMP_TO_GROUND adjusts to terrain
         const pos = Cesium.Cartesian3.fromDegrees(
           f.longitude_deg,
           f.latitude_deg,
-          nlpRenderHeight(f.altitude_m),
+          0,
         );
         (entity.position as Cesium.ConstantPositionProperty).setValue(pos);
 
@@ -420,11 +420,12 @@ export function CesiumMap({
           pool[i]!.position as Cesium.ConstantPositionProperty
         ).getValue(viewer.clock.currentTime);
         if (nlpPos) {
-          // NLP endpoint stays at ground level (height=0); line slopes up to marker
+          // NLP line endpoint at terrain surface via globe.getHeight()
           Cesium.Cartographic.fromCartesian(
             nlpPos, undefined, scratchNlpCarto,
           );
-          scratchNlpCarto.height = nlpRenderHeight(null);
+          const terrainH = viewer.scene.globe.getHeight(scratchNlpCarto);
+          scratchNlpCarto.height = nlpTerrainHeight(terrainH);
           viewer.scene.globe.ellipsoid.cartographicToCartesian(
             scratchNlpCarto, linePositions[i]![0]!,
           );
@@ -440,11 +441,11 @@ export function CesiumMap({
       }
     };
 
-    viewer.scene.preRender.addEventListener(onPreRender);
+    viewer.scene.preUpdate.addEventListener(onPreRender);
 
     return () => {
       if (viewer.isDestroyed()) return;
-      viewer.scene.preRender.removeEventListener(onPreRender);
+      viewer.scene.preUpdate.removeEventListener(onPreRender);
       for (const entity of pool) entity.show = false;
       for (const line of linePool) line.show = false;
     };

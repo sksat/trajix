@@ -3,7 +3,7 @@ import {
   lowerBoundNlp,
   findActiveNlpFixes,
   nlpStyle,
-  nlpRenderHeight,
+  nlpTerrainHeight,
   type NlpFixEntry,
 } from "./nlpFilter";
 
@@ -165,26 +165,31 @@ describe("findActiveNlpFixes", () => {
 // ────────────────────────────────────────────
 
 // ────────────────────────────────────────────
-// nlpRenderHeight
+// nlpTerrainHeight
 // ────────────────────────────────────────────
 
-describe("nlpRenderHeight", () => {
-  it("returns 0 for null altitude (most NLP fixes)", () => {
-    expect(nlpRenderHeight(null)).toBe(0);
+describe("nlpTerrainHeight", () => {
+  it("returns terrain height when available", () => {
+    // Typical terrain height in Japan (~100m above ellipsoid)
+    expect(nlpTerrainHeight(100)).toBe(100);
   });
 
-  it("returns 0 even when NLP fix has altitude", () => {
-    // NLP markers should always be ground-clamped, never at GPS altitude
-    expect(nlpRenderHeight(288)).toBe(0);
+  it("returns 0 when terrain not loaded (undefined)", () => {
+    // globe.getHeight() returns undefined when tiles not loaded
+    expect(nlpTerrainHeight(undefined)).toBe(0);
   });
 
-  it("returns 0 for high altitude (flight scenario)", () => {
-    // Even if NLP reports altitude during flight, render at ground
-    expect(nlpRenderHeight(10000)).toBe(0);
+  it("returns 0 for height=0 (ocean/coast)", () => {
+    expect(nlpTerrainHeight(0)).toBe(0);
   });
 
-  it("returns 0 for zero altitude", () => {
-    expect(nlpRenderHeight(0)).toBe(0);
+  it("returns negative terrain height (below ellipsoid)", () => {
+    // Some ocean areas have negative terrain height
+    expect(nlpTerrainHeight(-10)).toBe(-10);
+  });
+
+  it("returns high terrain height (mountain)", () => {
+    expect(nlpTerrainHeight(3776)).toBe(3776);
   });
 });
 
