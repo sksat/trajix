@@ -732,9 +732,18 @@ fn analyze_dr(path: &str) {
     println!("  IMU samples: {} total", d.imu_total);
     println!("    Integrated:           {:>10}", d.imu_integrated);
     println!("    Rejected (no state):  {:>10}", d.imu_rejected_no_state);
-    println!("    Rejected (no att):    {:>10}", d.imu_rejected_no_attitude);
-    println!("    Rejected (stale att): {:>10}", d.imu_rejected_stale_attitude);
-    println!("    Rejected (max dur):   {:>10}", d.imu_rejected_max_duration);
+    println!(
+        "    Rejected (no att):    {:>10}",
+        d.imu_rejected_no_attitude
+    );
+    println!(
+        "    Rejected (stale att): {:>10}",
+        d.imu_rejected_stale_attitude
+    );
+    println!(
+        "    Rejected (max dur):   {:>10}",
+        d.imu_rejected_max_duration
+    );
     println!("    Rejected (min dt):    {:>10}", d.imu_rejected_min_dt);
     println!("    Rejected (gap):       {:>10}", d.imu_rejected_gap);
     println!("  DR trajectory points: {}", result.dr_trajectory.len());

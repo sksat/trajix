@@ -1108,8 +1108,8 @@ mod tests {
     #[test]
     fn dr_constant_velocity_eastward() {
         let mut dr = DeadReckoning::new(DeadReckoningConfig {
-            zupt_speed_threshold_mps: 0.0,  // disable ZUPT
-            max_attitude_age_ms: None,       // disable staleness (test is about velocity)
+            zupt_speed_threshold_mps: 0.0, // disable ZUPT
+            max_attitude_age_ms: None,     // disable staleness (test is about velocity)
             ..DeadReckoningConfig::default()
         });
 
@@ -1404,8 +1404,7 @@ mod tests {
         dr.push_gnss(&GnssFix::from(&make_fix(2000, 50.0, None, None)));
         dr.push_attitude(&AttitudeSample::from(&make_grv(2000, 0.0, 0.0, 0.0, 1.0)));
         // 10 seconds stale but check disabled (max_dt_s/max_dr_duration raised too)
-        let result =
-            dr.push_imu(&ImuSample::from(&make_accel(12000, 0.0, 0.0, GRAVITY_MS2)));
+        let result = dr.push_imu(&ImuSample::from(&make_accel(12000, 0.0, 0.0, GRAVITY_MS2)));
         assert!(
             result.is_some(),
             "staleness check disabled → should still emit DR"
@@ -1420,10 +1419,7 @@ mod tests {
         dr.push_attitude(&AttitudeSample::from(&make_grv(2000, 0.0, 0.0, 0.0, 1.0)));
         // Exactly at threshold (500ms) → accepted (> not >=)
         let result = dr.push_imu(&ImuSample::from(&make_accel(2500, 0.0, 0.0, GRAVITY_MS2)));
-        assert!(
-            result.is_some(),
-            "exactly at threshold should be accepted"
-        );
+        assert!(result.is_some(), "exactly at threshold should be accepted");
     }
 
     #[test]
@@ -1438,10 +1434,7 @@ mod tests {
         dr.push_attitude(&AttitudeSample::from(&make_grv(2000, 0.0, 0.0, 0.0, 1.0)));
         // 250ms > 200ms threshold
         let result = dr.push_imu(&ImuSample::from(&make_accel(2250, 0.0, 0.0, GRAVITY_MS2)));
-        assert!(
-            result.is_none(),
-            "250ms > 200ms threshold → should reject"
-        );
+        assert!(result.is_none(), "250ms > 200ms threshold → should reject");
     }
 
     #[test]
@@ -2492,7 +2485,11 @@ mod tests {
         // Phase 1: 20s straight east
         let half_east = east_angle / 2.0;
         dr.push_attitude(&AttitudeSample::from(&make_grv(
-            5000, 0.0, 0.0, half_east.sin(), half_east.cos(),
+            5000,
+            0.0,
+            0.0,
+            half_east.sin(),
+            half_east.cos(),
         )));
         for i in 1..=2000 {
             dr.push_imu(&ImuSample::from(&make_accel(
@@ -2531,7 +2528,11 @@ mod tests {
         let exit_angle = east_angle + turn_rad;
         let half_exit = exit_angle / 2.0;
         dr.push_attitude(&AttitudeSample::from(&make_grv(
-            35000, 0.0, 0.0, half_exit.sin(), half_exit.cos(),
+            35000,
+            0.0,
+            0.0,
+            half_exit.sin(),
+            half_exit.cos(),
         )));
         for i in 1..=3000 {
             dr.push_imu(&ImuSample::from(&make_accel(
