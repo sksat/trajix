@@ -1296,12 +1296,23 @@ mod tests {
         let plot_w = width - 2.0 * margin;
         let plot_h = height - 2.0 * margin;
 
-        // Union bounding box across all trajectories
+        // Bounding box: GNSS points + smoothed trajectories (skip first = IMU-only).
+        // IMU-only DR may drift far off; letting it clip makes the comparison clearer.
         let mut min_lon = f64::MAX;
         let mut max_lon = f64::MIN;
         let mut min_lat = f64::MAX;
         let mut max_lat = f64::MIN;
-        for t in trajectories {
+        // Always include GNSS points from the first trajectory
+        if let Some(t) = trajectories.first() {
+            for p in t.points.iter().filter(|p| p.source == DrSource::Gnss) {
+                min_lon = min_lon.min(p.longitude_deg);
+                max_lon = max_lon.max(p.longitude_deg);
+                min_lat = min_lat.min(p.latitude_deg);
+                max_lat = max_lat.max(p.latitude_deg);
+            }
+        }
+        // Include all points from smoothed trajectories (index 1+)
+        for t in trajectories.iter().skip(1) {
             for p in t.points {
                 min_lon = min_lon.min(p.longitude_deg);
                 max_lon = max_lon.max(p.longitude_deg);
@@ -1451,19 +1462,19 @@ mod tests {
     // ── Edge case visualization tests ──
     //
     // Each test builds the trajectory via a reusable builder, runs assertions,
-    // then renders a smoothing-comparison SVG (raw DR + Linear + EndpointConstrained).
+    // then renders a smoothing-comparison SVG (IMU-only + Linear + EndpointConstrained).
     //
     // Run with: cargo test -p trajix dr_viz -- --ignored
 
     /// Helper: render comparison SVG for a trajectory and save it.
-    fn save_comparison(raw: &[DrPoint], name: &str, title: &str, desc: &str) {
-        let linear = smooth_trajectory(raw, DrSmoothing::Linear);
-        let ec = smooth_trajectory(raw, DrSmoothing::EndpointConstrained);
+    fn save_comparison(trajectory: &[DrPoint], name: &str, title: &str, desc: &str) {
+        let linear = smooth_trajectory(trajectory, DrSmoothing::Linear);
+        let ec = smooth_trajectory(trajectory, DrSmoothing::EndpointConstrained);
         let svg = render_comparison_svg(
             &[
                 NamedTrajectory {
-                    label: "Raw DR",
-                    points: raw,
+                    label: "IMU-only",
+                    points: trajectory,
                     color: "#dc2626",
                     dash: Some("6,3"),
                 },
@@ -1987,5 +1998,408 @@ mod tests {
             base_lon + 0.003,
         ));
         dr.finalize()
+    }
+
+    // ── Real data edge case extraction ──
+    //
+    // Parse actual GNSS log files, find DR segments, rank them by interest,
+    // and generate comparison SVGs with smoothing methods.
+    //
+    // Run with: cargo test -p trajix dr_viz_real -- --ignored
+
+    /// Parse a real GNSS log file through the DR pipeline.
+    fn parse_real_log(filename: &str) -> Vec<DrPoint> {
+        let path = format!("{}/../../{}", env!("CARGO_MANIFEST_DIR"), filename);
+        let file = std::fs::File::open(&path).unwrap_or_else(|e| {
+            panic!("Could not open {path}: {e}. Real data file required for this test.");
+        });
+        let reader = std::io::BufReader::new(file);
+        let parser = crate::parser::streaming::StreamingParser::new(reader);
+
+        let mut dr = DeadReckoning::new(DrConfig::default());
+        for record in parser.flatten() {
+            dr.push(&record);
+        }
+        dr.finalize()
+    }
+
+    /// Metadata about a discovered DR segment.
+    #[allow(dead_code)]
+    struct RealSegment {
+        gnss_start: usize,
+        gnss_end: usize,
+        dr_start: usize,
+        dr_end: usize,
+        duration_ms: i64,
+        dr_count: usize,
+        endpoint_error_m: f64,
+        avg_speed_mps: f64,
+    }
+
+    /// Find and rank all DR segments in a trajectory.
+    fn find_real_segments(trajectory: &[DrPoint]) -> Vec<RealSegment> {
+        let segments = find_dr_segments(trajectory);
+        segments
+            .iter()
+            .map(|seg| {
+                let start = &trajectory[seg.start_gnss];
+                let end = &trajectory[seg.end_gnss];
+                let last_dr = &trajectory[seg.dr_end];
+                let duration_ms = end.time_ms - start.time_ms;
+                let dr_count = seg.dr_end - seg.dr_start + 1;
+                let endpoint_error_m = crate::geo::haversine_distance_m(
+                    last_dr.latitude_deg,
+                    last_dr.longitude_deg,
+                    end.latitude_deg,
+                    end.longitude_deg,
+                );
+                let dist_m = crate::geo::haversine_distance_m(
+                    start.latitude_deg,
+                    start.longitude_deg,
+                    end.latitude_deg,
+                    end.longitude_deg,
+                );
+                let dt_s = duration_ms as f64 / 1000.0;
+                let avg_speed_mps = if dt_s > 0.0 { dist_m / dt_s } else { 0.0 };
+
+                RealSegment {
+                    gnss_start: seg.start_gnss,
+                    gnss_end: seg.end_gnss,
+                    dr_start: seg.dr_start,
+                    dr_end: seg.dr_end,
+                    duration_ms,
+                    dr_count,
+                    endpoint_error_m,
+                    avg_speed_mps,
+                }
+            })
+            .collect()
+    }
+
+    /// Extract a trajectory window around a segment (±context GNSS points).
+    fn extract_window(trajectory: &[DrPoint], seg: &RealSegment, context: usize) -> Vec<DrPoint> {
+        let mut before = Vec::new();
+        for i in (0..seg.gnss_start).rev() {
+            if trajectory[i].source == DrSource::Gnss {
+                before.push(i);
+                if before.len() >= context {
+                    break;
+                }
+            }
+        }
+        before.reverse();
+
+        let mut after = Vec::new();
+        for (i, pt) in trajectory.iter().enumerate().skip(seg.gnss_end + 1) {
+            if pt.source == DrSource::Gnss {
+                after.push(i);
+                if after.len() >= context {
+                    break;
+                }
+            }
+        }
+
+        let start = before.first().copied().unwrap_or(seg.gnss_start);
+        let end = after.last().copied().unwrap_or(seg.gnss_end);
+        trajectory[start..=end].to_vec()
+    }
+
+    /// Extract a trajectory window spanning multiple consecutive segments.
+    fn extract_multi_segment_window(
+        trajectory: &[DrPoint],
+        segments: &[&RealSegment],
+        context: usize,
+    ) -> Vec<DrPoint> {
+        let first = segments.first().unwrap();
+        let last = segments.last().unwrap();
+
+        let mut before = Vec::new();
+        for i in (0..first.gnss_start).rev() {
+            if trajectory[i].source == DrSource::Gnss {
+                before.push(i);
+                if before.len() >= context {
+                    break;
+                }
+            }
+        }
+        before.reverse();
+
+        let mut after = Vec::new();
+        for (i, pt) in trajectory.iter().enumerate().skip(last.gnss_end + 1) {
+            if pt.source == DrSource::Gnss {
+                after.push(i);
+                if after.len() >= context {
+                    break;
+                }
+            }
+        }
+
+        let start = before.first().copied().unwrap_or(first.gnss_start);
+        let end = after.last().copied().unwrap_or(last.gnss_end);
+        trajectory[start..=end].to_vec()
+    }
+
+    #[test]
+    #[ignore]
+    fn dr_viz_real_data_analysis() {
+        for filename in [
+            "gnss_log_test_8min.txt",
+            "gnss_log_2025_11_29_10_31_31.txt",
+            "gnss_log_2026_02_21_11_42_28.txt",
+        ] {
+            let path = format!("{}/../../{}", env!("CARGO_MANIFEST_DIR"), filename);
+            if !std::path::Path::new(&path).exists() {
+                eprintln!("Skipping {filename} (not found)");
+                continue;
+            }
+            eprintln!("\n=== Analyzing {filename} ===");
+            let trajectory = parse_real_log(filename);
+
+            let gnss_count = trajectory
+                .iter()
+                .filter(|p| p.source == DrSource::Gnss)
+                .count();
+            let dr_count = trajectory
+                .iter()
+                .filter(|p| p.source == DrSource::DeadReckoning)
+                .count();
+            eprintln!(
+                "  Total: {} points (GNSS={gnss_count}, DR={dr_count})",
+                trajectory.len()
+            );
+
+            let segments = find_real_segments(&trajectory);
+            eprintln!("  DR segments: {}", segments.len());
+            if segments.is_empty() {
+                continue;
+            }
+
+            let mut by_duration: Vec<&RealSegment> = segments.iter().collect();
+            by_duration.sort_by(|a, b| b.duration_ms.cmp(&a.duration_ms));
+
+            let mut by_error: Vec<&RealSegment> = segments.iter().collect();
+            by_error
+                .sort_by(|a, b| b.endpoint_error_m.partial_cmp(&a.endpoint_error_m).unwrap());
+
+            let mut by_speed: Vec<&RealSegment> = segments.iter().collect();
+            by_speed.sort_by(|a, b| b.avg_speed_mps.partial_cmp(&a.avg_speed_mps).unwrap());
+
+            eprintln!("\n  Top 5 by duration:");
+            for s in by_duration.iter().take(5) {
+                eprintln!(
+                    "    {:.1}s  DR={:>4}pts  err={:.1}m  speed={:.1}m/s",
+                    s.duration_ms as f64 / 1000.0,
+                    s.dr_count,
+                    s.endpoint_error_m,
+                    s.avg_speed_mps,
+                );
+            }
+
+            eprintln!("\n  Top 5 by endpoint error:");
+            for s in by_error.iter().take(5) {
+                eprintln!(
+                    "    err={:.1}m  dur={:.1}s  DR={:>4}pts  speed={:.1}m/s",
+                    s.endpoint_error_m,
+                    s.duration_ms as f64 / 1000.0,
+                    s.dr_count,
+                    s.avg_speed_mps,
+                );
+            }
+
+            eprintln!("\n  Top 5 by speed:");
+            for s in by_speed.iter().take(5) {
+                eprintln!(
+                    "    speed={:.1}m/s ({:.0}km/h)  dur={:.1}s  DR={:>4}pts  err={:.1}m",
+                    s.avg_speed_mps,
+                    s.avg_speed_mps * 3.6,
+                    s.duration_ms as f64 / 1000.0,
+                    s.dr_count,
+                    s.endpoint_error_m,
+                );
+            }
+
+            let dur_buckets = [
+                (0.0, 5.0, "<5s"),
+                (5.0, 15.0, "5-15s"),
+                (15.0, 30.0, "15-30s"),
+                (30.0, 60.0, "30-60s"),
+                (60.0, f64::MAX, "60s+"),
+            ];
+            eprint!("\n  Duration distribution: ");
+            for (lo, hi, label) in &dur_buckets {
+                let count = segments
+                    .iter()
+                    .filter(|s| {
+                        let d = s.duration_ms as f64 / 1000.0;
+                        d >= *lo && d < *hi
+                    })
+                    .count();
+                if count > 0 {
+                    eprint!("{label}={count} ");
+                }
+            }
+            eprintln!();
+        }
+    }
+
+    /// Generate comparison SVGs for the most interesting segments in a log file.
+    fn generate_real_data_svgs(filename: &str, prefix: &str, label: &str) {
+        let path = format!("{}/../../{}", env!("CARGO_MANIFEST_DIR"), filename);
+        if !std::path::Path::new(&path).exists() {
+            panic!("{filename} not found — required for this test");
+        }
+        eprintln!("Parsing {filename}...");
+        let trajectory = parse_real_log(filename);
+        let segments = find_real_segments(&trajectory);
+        eprintln!(
+            "  {} points, {} DR segments",
+            trajectory.len(),
+            segments.len()
+        );
+
+        if segments.is_empty() {
+            eprintln!("  No DR segments found.");
+            return;
+        }
+
+        // 1. Longest segment
+        let mut by_duration: Vec<&RealSegment> = segments.iter().collect();
+        by_duration.sort_by(|a, b| b.duration_ms.cmp(&a.duration_ms));
+        if let Some(seg) = by_duration.first() {
+            let window = extract_window(&trajectory, seg, 5);
+            save_comparison(
+                &window,
+                &format!("real_{prefix}_longest"),
+                &format!("{label} — Longest DR gap"),
+                &format!(
+                    "Real data: {:.1}s gap, {} DR points, endpoint error {:.1}m",
+                    seg.duration_ms as f64 / 1000.0,
+                    seg.dr_count,
+                    seg.endpoint_error_m,
+                ),
+            );
+        }
+
+        // 2. Worst endpoint error (skip if same as longest)
+        let mut by_error: Vec<&RealSegment> = segments.iter().collect();
+        by_error.sort_by(|a, b| b.endpoint_error_m.partial_cmp(&a.endpoint_error_m).unwrap());
+        if let Some(seg) = by_error
+            .iter()
+            .find(|s| s.dr_start != by_duration[0].dr_start)
+        {
+            let window = extract_window(&trajectory, seg, 5);
+            save_comparison(
+                &window,
+                &format!("real_{prefix}_worst_drift"),
+                &format!("{label} — Worst DR drift"),
+                &format!(
+                    "Real data: endpoint error {:.1}m, {:.1}s gap, {:.1}m/s",
+                    seg.endpoint_error_m,
+                    seg.duration_ms as f64 / 1000.0,
+                    seg.avg_speed_mps,
+                ),
+            );
+        }
+
+        // 3. Highest speed segment
+        let mut by_speed: Vec<&RealSegment> = segments.iter().collect();
+        by_speed.sort_by(|a, b| b.avg_speed_mps.partial_cmp(&a.avg_speed_mps).unwrap());
+        if let Some(seg) = by_speed.first()
+            && seg.dr_start != by_duration[0].dr_start
+            && seg.dr_start != by_error[0].dr_start
+            && seg.avg_speed_mps > 1.0
+        {
+            let window = extract_window(&trajectory, seg, 5);
+            save_comparison(
+                &window,
+                &format!("real_{prefix}_high_speed"),
+                &format!("{label} — High-speed DR"),
+                &format!(
+                    "Real data: {:.1}m/s ({:.0}km/h), {:.1}s gap, err={:.1}m",
+                    seg.avg_speed_mps,
+                    seg.avg_speed_mps * 3.6,
+                    seg.duration_ms as f64 / 1000.0,
+                    seg.endpoint_error_m,
+                ),
+            );
+        }
+
+        // 4. Find cluster of frequent gaps (urban-canyon-like)
+        // Look for windows where ≥3 segments occur within 60s
+        let mut best_cluster: Option<Vec<&RealSegment>> = None;
+        let mut best_cluster_count = 0;
+        for i in 0..segments.len() {
+            let t_start = segments[i].duration_ms + trajectory[segments[i].gnss_start].time_ms;
+            let cluster: Vec<&RealSegment> = segments[i..]
+                .iter()
+                .take_while(|s| {
+                    trajectory[s.gnss_end].time_ms - trajectory[segments[i].gnss_start].time_ms
+                        < 60_000
+                })
+                .collect();
+            if cluster.len() >= 3 && cluster.len() > best_cluster_count {
+                let _ = t_start;
+                best_cluster_count = cluster.len();
+                best_cluster = Some(cluster);
+            }
+        }
+        if let Some(cluster) = best_cluster {
+            let window = extract_multi_segment_window(&trajectory, &cluster, 3);
+            let total_dr: usize = cluster.iter().map(|s| s.dr_count).sum();
+            save_comparison(
+                &window,
+                &format!("real_{prefix}_frequent_gaps"),
+                &format!("{label} — Frequent gaps"),
+                &format!(
+                    "Real data: {} gaps in {:.0}s window, {} total DR points",
+                    cluster.len(),
+                    (trajectory[cluster.last().unwrap().gnss_end].time_ms
+                        - trajectory[cluster.first().unwrap().gnss_start].time_ms)
+                        as f64
+                        / 1000.0,
+                    total_dr,
+                ),
+            );
+        }
+
+        // 5. Shortest non-trivial segment (≥3 DR points)
+        let mut short: Vec<&RealSegment> = segments.iter().filter(|s| s.dr_count >= 3).collect();
+        short.sort_by(|a, b| a.duration_ms.cmp(&b.duration_ms));
+        if let Some(seg) = short.first()
+            && seg.dr_start != by_duration[0].dr_start
+        {
+            let window = extract_window(&trajectory, seg, 5);
+            save_comparison(
+                &window,
+                &format!("real_{prefix}_shortest"),
+                &format!("{label} — Shortest DR gap"),
+                &format!(
+                    "Real data: {:.1}s gap, {} DR points, err={:.1}m",
+                    seg.duration_ms as f64 / 1000.0,
+                    seg.dr_count,
+                    seg.endpoint_error_m,
+                ),
+            );
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn dr_viz_real_flight() {
+        generate_real_data_svgs(
+            "gnss_log_2025_11_29_10_31_31.txt",
+            "flight",
+            "Chitose→Narita Flight",
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn dr_viz_real_hiking() {
+        generate_real_data_svgs(
+            "gnss_log_2026_02_21_11_42_28.txt",
+            "hiking",
+            "Mt. Tsukuba Hiking",
+        );
     }
 }
