@@ -12,7 +12,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@duckdb/duckdb-wasm": "1.33.1-dev18.0",
+    "@duckdb/duckdb-wasm": "1.33.1-dev45.0",
     "cesium": "^1.138.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
